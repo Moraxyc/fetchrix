@@ -15,7 +15,10 @@ rustPlatform.buildRustPackage {
     ];
   };
 
-  cargoLock.lockFile = ../Cargo.lock;
+  cargoLock = {
+    lockFile = ../Cargo.lock;
+    outputHashes."nix-compat-0.1.0" = "sha256-ZMU90InalYjEe9Uvv0NCNCHNIxKmt4PRcWZ42w272Xk=";
+  };
 
   meta = {
     inherit (manifest.package) description;
