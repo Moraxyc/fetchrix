@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, fmt, path::Path, str::FromStr};
 
 use miette::{Diagnostic, NamedSource, SourceSpan};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error, Diagnostic)]
@@ -57,6 +57,21 @@ pub struct Package {
     pub derive: BTreeMap<String, DeriveSpec>,
 }
 
+impl Package {
+    /// Hash of the settings that determine the locked source and derived hashes.
+    ///
+    /// # Panics
+    ///
+    /// Never; the settings always serialize to JSON.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        let canonical = serde_json::to_vec(&(&self.fetch, &self.derive))
+            .expect("fetch and derive settings always serialize");
+        nix_compat::nixhash::NixHash::from(nix_compat::nixhash::Sha256::digest_bytes(canonical))
+            .to_sri_string()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "source", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum VersionSpec {
@@ -90,7 +105,7 @@ pub enum VersionSpec {
     },
 }
 
-#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum FetchSpec {
     Url {
@@ -119,7 +134,7 @@ pub enum FetchSpec {
     },
 }
 
-#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeriveSpec {
     pub kind: DeriveKind,
@@ -129,7 +144,7 @@ pub struct DeriveSpec {
     pub attr: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeriveKind {
     GoVendor,
@@ -137,7 +152,7 @@ pub enum DeriveKind {
     CargoVendor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Strategy {
     Native,
@@ -146,8 +161,8 @@ pub enum Strategy {
 }
 
 /// A GitHub repository written as `owner/name`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "String")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct GitHubRepo {
     pub owner: String,
     pub name: String,
@@ -174,6 +189,12 @@ impl TryFrom<String> for GitHubRepo {
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         s.parse()
+    }
+}
+
+impl From<GitHubRepo> for String {
+    fn from(repo: GitHubRepo) -> Self {
+        repo.to_string()
     }
 }
 
@@ -212,9 +233,15 @@ impl TryFrom<String> for Pattern {
 }
 
 /// A string where `{version}` is replaced by the package version.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "String")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Template(String);
+
+impl From<Template> for String {
+    fn from(t: Template) -> Self {
+        t.0
+    }
+}
 
 impl Template {
     const PLACEHOLDER: &str = "{version}";

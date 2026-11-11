@@ -3,44 +3,20 @@
 mod git;
 mod version;
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
-
 use miette::Diagnostic;
-use reqwest::{Url, header};
 use serde::{Deserialize, de::DeserializeOwned};
 use thiserror::Error;
-use tokio::sync::Semaphore;
 
-use crate::config::VersionSpec;
-
-/// Concurrent requests allowed per host.
-const PER_HOST: usize = 4;
+use crate::{
+    config::VersionSpec,
+    http::{Client, HttpError},
+};
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum SourceError {
-    #[error("cannot create HTTP client")]
-    #[diagnostic(code(fetchrix::source::client))]
-    Client(#[source] reqwest::Error),
-    #[error("invalid URL `{url}`: {message}")]
-    #[diagnostic(code(fetchrix::source::url))]
-    Url { url: String, message: String },
-    #[error("request to {url} failed")]
-    #[diagnostic(code(fetchrix::source::http))]
-    Http {
-        url: String,
-        #[source]
-        source: reqwest::Error,
-    },
-    #[error("GitHub API rate limit exceeded")]
-    #[diagnostic(
-        code(fetchrix::source::rate_limit),
-        help("set GITHUB_TOKEN or pass --github-token")
-    )]
-    GithubRateLimit,
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Http(#[from] HttpError),
     #[error("unexpected response: {0}")]
     #[diagnostic(code(fetchrix::source::decode))]
     Decode(String),
@@ -51,82 +27,15 @@ pub enum SourceError {
 
 type Result<T, E = SourceError> = std::result::Result<T, E>;
 
-pub struct Client {
-    http: reqwest::Client,
-    hosts: Mutex<HashMap<String, Arc<Semaphore>>>,
-    github_token: Option<String>,
-}
-
-impl Client {
-    /// Creates a client; `github_token` authenticates GitHub API requests.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TLS backend cannot be initialized.
-    pub fn new(github_token: Option<String>) -> Result<Self> {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("fetchrix/", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(SourceError::Client)?;
-        Ok(Self {
-            http,
-            hosts: Mutex::default(),
-            github_token,
-        })
-    }
-
-    /// Queries the latest upstream version described by `spec`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the request fails or no version is found.
-    pub async fn latest(&self, spec: &VersionSpec) -> Result<String> {
-        match endpoint(spec) {
-            Some(url) => extract(spec, &self.get(&url).await?),
-            None => extract(spec, &[]),
-        }
-    }
-
-    async fn get(&self, url: &str) -> Result<Vec<u8>> {
-        let parsed = Url::parse(url).map_err(|e| SourceError::Url {
-            url: url.to_owned(),
-            message: e.to_string(),
-        })?;
-        let host = parsed.host_str().unwrap_or_default().to_owned();
-        let semaphore = self
-            .hosts
-            .lock()
-            .expect("no code panics while holding the hosts lock")
-            .entry(host.clone())
-            .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST)))
-            .clone();
-        let _permit = semaphore
-            .acquire()
-            .await
-            .expect("host semaphores are never closed");
-
-        let mut request = self.http.get(parsed);
-        if host == "api.github.com" {
-            request = request.header(header::ACCEPT, "application/vnd.github+json");
-            if let Some(token) = &self.github_token {
-                request = request.bearer_auth(token);
-            }
-        }
-        let http = |source| SourceError::Http {
-            url: url.to_owned(),
-            source,
-        };
-        let response = request.send().await.map_err(http)?;
-        let status = response.status();
-        if host == "api.github.com"
-            && self.github_token.is_none()
-            && matches!(status.as_u16(), 403 | 429)
-        {
-            return Err(SourceError::GithubRateLimit);
-        }
-        let response = response.error_for_status().map_err(http)?;
-        Ok(response.bytes().await.map_err(http)?.to_vec())
+/// Queries the latest upstream version described by `spec`.
+///
+/// # Errors
+///
+/// Returns an error if the request fails or no version is found.
+pub async fn latest(client: &Client, spec: &VersionSpec) -> Result<String> {
+    match endpoint(spec) {
+        Some(url) => extract(spec, &client.get(&url).await?),
+        None => extract(spec, &[]),
     }
 }
 
@@ -347,7 +256,10 @@ mod tests {
                 name: "typescript".into(),
             },
         ] {
-            assert!(!client.latest(&spec).await.unwrap().is_empty(), "{spec:?}");
+            assert!(
+                !latest(&client, &spec).await.unwrap().is_empty(),
+                "{spec:?}"
+            );
         }
     }
 }
