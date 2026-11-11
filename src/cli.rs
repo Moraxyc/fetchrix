@@ -2,15 +2,17 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
+use crate::auth::HostToken;
+
 #[derive(Debug, Parser)]
 #[command(version, about)]
 pub struct Cli {
     /// Configuration file; the lock file is written next to it with a `.lock` extension.
     #[arg(short, long, global = true, default_value = "fetchrix.toml")]
     pub config: PathBuf,
-    /// Token for GitHub API requests.
-    #[arg(long, global = true, env = "GITHUB_TOKEN", hide_env_values = true)]
-    pub github_token: Option<String>,
+    /// Bearer token for requests to HOST, overriding environment tokens and netrc; repeatable.
+    #[arg(long, global = true, value_name = "HOST=TOKEN")]
+    pub access_token: Vec<HostToken>,
     #[command(subcommand)]
     pub command: Command,
 }

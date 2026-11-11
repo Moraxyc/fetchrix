@@ -39,6 +39,7 @@ tokio = { version = "1", features = [
 ] }
 toml = "1"
 indicatif = "0.18.6"
+rust-netrc = "0.1"
 
 [lints.rust]
 unsafe_code = "forbid"

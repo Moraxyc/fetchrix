@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod derive;
@@ -12,6 +13,7 @@ pub use error::{Error, Result};
 
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
+use auth::Credentials;
 use cli::{Cli, Command, Selection};
 use config::{Config, Package};
 use http::Client;
@@ -40,7 +42,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
 }
 
 async fn check(cli: &Cli, config: &Config, lock: &Lock, selected: &[String]) -> Result<()> {
-    let client = Arc::new(Client::new(cli.github_token.clone())?);
+    let client = Arc::new(Client::new(Credentials::load(&cli.access_token)?)?);
     let ui = Ui::new(selected);
     let mut tasks = tokio::task::JoinSet::new();
     for name in selected {
@@ -87,7 +89,7 @@ async fn update(
     selected: Vec<String>,
     all: bool,
 ) -> Result<()> {
-    let client = Arc::new(Client::new(cli.github_token.clone())?);
+    let client = Arc::new(Client::new(Credentials::load(&cli.access_token)?)?);
     let flake_dir = Arc::new(fetch::flake_dir(&cli.config));
     let lockfiles_dir = Arc::new(cli.lockfiles_dir());
     let ui = Ui::new(&selected);

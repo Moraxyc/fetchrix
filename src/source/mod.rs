@@ -240,7 +240,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "network"]
     async fn queries_live_sources() {
-        let client = Client::new(std::env::var("GITHUB_TOKEN").ok()).unwrap();
+        let client = Client::new(crate::auth::Credentials::load(&[]).unwrap()).unwrap();
         for spec in [
             VersionSpec::GithubTag {
                 repo: repo(),

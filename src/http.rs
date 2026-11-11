@@ -9,6 +9,8 @@ use std::{
 use miette::Diagnostic;
 use reqwest::{Response, Url, header};
 use thiserror::Error;
+
+use crate::auth::Credentials;
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::{Semaphore, SemaphorePermit},
@@ -43,7 +45,7 @@ pub enum HttpError {
     #[error("GitHub API rate limit exceeded")]
     #[diagnostic(
         code(fetchrix::http::rate_limit),
-        help("set GITHUB_TOKEN or pass --github-token")
+        help("set GITHUB_TOKEN, pass --access-token github.com=TOKEN, or add github.com to netrc")
     )]
     GithubRateLimit,
 }
@@ -53,16 +55,16 @@ type Result<T, E = HttpError> = std::result::Result<T, E>;
 pub struct Client {
     http: reqwest::Client,
     hosts: Mutex<HashMap<String, Arc<Semaphore>>>,
-    github_token: Option<String>,
+    credentials: Credentials,
 }
 
 impl Client {
-    /// Creates a client; `github_token` authenticates GitHub API requests.
+    /// Creates a client that authenticates requests with `credentials`.
     ///
     /// # Errors
     ///
     /// Returns an error if the TLS backend cannot be initialized.
-    pub fn new(github_token: Option<String>) -> Result<Self> {
+    pub fn new(credentials: Credentials) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("fetchrix/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(30))
@@ -72,7 +74,7 @@ impl Client {
         Ok(Self {
             http,
             hosts: Mutex::default(),
-            github_token,
+            credentials,
         })
     }
 
@@ -121,8 +123,8 @@ impl Client {
             url: url.to_owned(),
             source,
         };
-        if self.github_token.is_none()
-            && response.url().host_str() == Some(GITHUB_API)
+        if response.url().host_str() == Some(GITHUB_API)
+            && self.credentials.get(GITHUB_API).is_none()
             && matches!(response.status().as_u16(), 403 | 429)
         {
             return Err(HttpError::GithubRateLimit);
@@ -144,13 +146,13 @@ impl Client {
     }
 
     async fn send(&self, url: Url) -> reqwest::Result<Response> {
-        let github = url.host_str() == Some(GITHUB_API);
+        let host = url.host_str().unwrap_or_default().to_owned();
         let mut request = self.http.get(url);
-        if github {
+        if host == GITHUB_API {
             request = request.header(header::ACCEPT, "application/vnd.github+json");
-            if let Some(token) = &self.github_token {
-                request = request.bearer_auth(token);
-            }
+        }
+        if let Some(credential) = self.credentials.get(&host) {
+            request = credential.apply(request);
         }
         request.send().await
     }
