@@ -176,10 +176,7 @@ async fn update_package(
     let mut files = Vec::new();
     for (attr, spec) in &package.derive {
         let entry = match deriver.derive(spec, &source.path).await? {
-            derive::Output::Hash(hash) => Derived::Hash(DerivedHash {
-                hash: hash.into(),
-                toolchain: None,
-            }),
+            derive::Output::Hash(hash) => Derived::Hash(DerivedHash { hash: hash.into() }),
             derive::Output::Lockfile {
                 name: file,
                 content,

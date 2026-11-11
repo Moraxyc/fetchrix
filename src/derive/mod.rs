@@ -112,9 +112,9 @@ impl Deriver<'_> {
 
 async fn lockfile(spec: &DeriveSpec, src: &Path) -> Result<Output> {
     let name = match spec.kind {
-        DeriveKind::CargoVendor => "Cargo.lock",
-        DeriveKind::NpmDeps => "package-lock.json",
-        DeriveKind::GoVendor => return Err(DeriveError::Unsupported("`lockfile` for Go")),
+        Some(DeriveKind::CargoVendor) => "Cargo.lock",
+        Some(DeriveKind::NpmDeps) => "package-lock.json",
+        None => return Err(DeriveError::Unsupported("`lockfile` without `kind`")),
     };
     let path = src
         .join(spec.sub_dir.as_deref().unwrap_or_default())

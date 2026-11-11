@@ -143,9 +143,9 @@ pub enum FetchSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeriveSpec {
-    pub kind: DeriveKind,
+    /// Ecosystem of the derived output; unused by `fod`.
+    pub kind: Option<DeriveKind>,
     pub strategy: Strategy,
-    pub toolchain: Option<String>,
     pub sub_dir: Option<String>,
     pub attr: Option<String>,
 }
@@ -153,7 +153,6 @@ pub struct DeriveSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeriveKind {
-    GoVendor,
     NpmDeps,
     CargoVendor,
 }
@@ -317,8 +316,8 @@ impl Config {
                     (Strategy::Native | Strategy::Lockfile, Some(_), _) => {
                         Some("`attr` is only used with `strategy = \"fod\"`")
                     }
-                    (Strategy::Lockfile, _, DeriveKind::GoVendor) => {
-                        Some("`go-vendor` does not support `strategy = \"lockfile\"`")
+                    (Strategy::Native | Strategy::Lockfile, _, None) => {
+                        Some("`strategy = \"native\"` and `\"lockfile\"` require `kind`")
                     }
                     _ => None,
                 };
@@ -355,8 +354,8 @@ mod tests {
             fetch   = { type = "github", repo = "owner/foo", rev = "v{version}" }
 
             [packages.foo.derive.vendorHash]
-            kind = "go-vendor"
-            strategy = "native"
+            strategy = "fod"
+            attr = ".#foo.goModules"
             sub_dir = "cmd/foo"
             "#,
         )
@@ -376,7 +375,6 @@ mod tests {
         };
         assert_eq!(r, &repo);
         assert_eq!(rev.render("1.2.3"), "v1.2.3");
-        assert_eq!(foo.derive["vendorHash"].kind, DeriveKind::GoVendor);
     }
 
     #[test]

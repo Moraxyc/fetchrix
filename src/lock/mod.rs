@@ -117,8 +117,6 @@ pub enum Derived {
 #[serde(deny_unknown_fields)]
 pub struct DerivedHash {
     pub hash: Hash,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub toolchain: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,8 +262,7 @@ mod tests {
       }},
       "derived": {{
         "vendorHash": {{
-          "hash": "{HASH}",
-          "toolchain": "go-1.25.3"
+          "hash": "{HASH}"
         }}
       }},
       "fingerprint": "abc"
