@@ -107,11 +107,25 @@ fn is_false(b: &bool) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Derived {
+    Hash(DerivedHash),
+    Lockfile(DerivedLockfile),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Derived {
+pub struct DerivedHash {
     pub hash: Hash,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolchain: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DerivedLockfile {
+    /// Path relative to the directory of the lock file.
+    pub lockfile: String,
 }
 
 /// A hash written in SRI form, such as `sha256-<base64>`.
@@ -200,22 +214,31 @@ impl Lock {
     ///
     /// Never; lock types always serialize to JSON.
     pub fn save(&self, path: &Path) -> Result<(), LockError> {
-        let io = |source| LockError::Io {
-            path: path.display().to_string(),
-            source,
-        };
         let mut text = serde_json::to_string_pretty(self).expect("lock types always serialize");
         text.push('\n');
-        let dir = match path.parent() {
-            Some(p) if !p.as_os_str().is_empty() => p,
-            _ => Path::new("."),
-        };
-        let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(io)?;
-        tmp.write_all(text.as_bytes()).map_err(io)?;
-        tmp.as_file().sync_all().map_err(io)?;
-        tmp.persist(path).map_err(|e| io(e.error))?;
-        Ok(())
+        write_atomic(path, text.as_bytes())
     }
+}
+
+/// Replaces `path` with `content` so readers never see a partial file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be written.
+pub fn write_atomic(path: &Path, content: &[u8]) -> Result<(), LockError> {
+    let io = |source| LockError::Io {
+        path: path.display().to_string(),
+        source,
+    };
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(io)?;
+    tmp.write_all(content).map_err(io)?;
+    tmp.as_file().sync_all().map_err(io)?;
+    tmp.persist(path).map_err(|e| io(e.error))?;
+    Ok(())
 }
 
 #[cfg(test)]

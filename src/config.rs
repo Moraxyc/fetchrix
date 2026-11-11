@@ -24,6 +24,12 @@ pub enum ConfigError {
         span: Option<SourceSpan>,
         message: String,
     },
+    #[error("invalid package name `{0}`")]
+    #[diagnostic(
+        code(fetchrix::config::name),
+        help("use ASCII letters, digits, `.`, `_`, and `-`, not starting with `.`")
+    )]
+    InvalidName(String),
     #[error("package `{package}`, derive `{derive}`: {message}")]
     #[diagnostic(code(fetchrix::config::invalid))]
     Invalid {
@@ -298,6 +304,13 @@ impl Config {
 
     fn validate(&self) -> Result<(), ConfigError> {
         for (package, spec) in &self.packages {
+            let valid_name = !package.starts_with('.')
+                && package
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+            if !valid_name {
+                return Err(ConfigError::InvalidName(package.clone()));
+            }
             for (derive, d) in &spec.derive {
                 let message = match (d.strategy, &d.attr, d.kind) {
                     (Strategy::Fod, None, _) => Some("`strategy = \"fod\"` requires `attr`"),

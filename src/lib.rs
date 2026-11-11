@@ -15,7 +15,7 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 use cli::{Cli, Command, Selection};
 use config::{Config, Package};
 use http::Client;
-use lock::{Lock, LockedPackage};
+use lock::{Derived, DerivedHash, DerivedLockfile, Lock, LockedPackage};
 
 /// Runs the command selected on the command line.
 ///
@@ -65,8 +65,11 @@ async fn check(cli: &Cli, config: &Config, lock: &Lock, selected: &[String]) -> 
 
 enum Outcome {
     Unchanged,
-    Updated(LockedPackage),
+    Updated(Box<LockedPackage>, Lockfiles),
 }
+
+/// Extracted lock files of one package, by file name.
+type Lockfiles = Vec<(&'static str, Vec<u8>)>;
 
 async fn update(
     cli: &Cli,
@@ -77,14 +80,20 @@ async fn update(
 ) -> Result<()> {
     let client = Arc::new(Client::new(cli.github_token.clone())?);
     let flake_dir = Arc::new(fetch::flake_dir(&cli.config));
+    let lockfiles_dir = Arc::new(cli.lockfiles_dir());
     let mut tasks = tokio::task::JoinSet::new();
     for name in selected {
         let client = Arc::clone(&client);
         let config = Arc::clone(&config);
         let flake_dir = Arc::clone(&flake_dir);
+        let lockfiles_dir = Arc::clone(&lockfiles_dir);
         let old = lock.packages.get(&name).cloned();
         tasks.spawn(async move {
-            let result = update_package(&client, &config, &flake_dir, &name, old).await;
+            let dirs = Dirs {
+                flake: &flake_dir,
+                lockfiles: &lockfiles_dir,
+            };
+            let result = update_package(&client, &config, dirs, &name, old).await;
             (name, result)
         });
     }
@@ -92,23 +101,36 @@ async fn update(
 
     let original = lock.clone();
     let mut failed = 0;
+    let mut lockfiles = BTreeMap::new();
     for (name, result) in results {
         match result {
             Ok(Outcome::Unchanged) => println!("{name}: {}", lock.packages[&name].version),
-            Ok(Outcome::Updated(new)) => {
+            Ok(Outcome::Updated(new, files)) => {
                 report(
                     &name,
                     lock.packages.get(&name).map(|p| p.version.as_str()),
                     &new.version,
                 );
-                lock.packages.insert(name, new);
+                lockfiles.insert(name.clone(), files);
+                lock.packages.insert(name, *new);
             }
             Err(e) => failed += fail(&name, e),
         }
     }
     if all {
-        lock.packages
-            .retain(|name, _| config.packages.contains_key(name));
+        let removed: Vec<_> = lock
+            .packages
+            .keys()
+            .filter(|name| !config.packages.contains_key(*name))
+            .cloned()
+            .collect();
+        for name in removed {
+            lock.packages.remove(&name);
+            lockfiles.insert(name, Vec::new());
+        }
+    }
+    for (name, files) in lockfiles {
+        write_lockfiles(&lockfiles_dir.join(name), &files)?;
     }
     if lock != original {
         lock.save(&cli.lock_path())?;
@@ -116,10 +138,16 @@ async fn update(
     finish(failed)
 }
 
+#[derive(Clone, Copy)]
+struct Dirs<'a> {
+    flake: &'a Path,
+    lockfiles: &'a Path,
+}
+
 async fn update_package(
     client: &Client,
     config: &Config,
-    flake_dir: &Path,
+    dirs: Dirs<'_>,
     name: &str,
     old: Option<LockedPackage>,
 ) -> Result<Outcome> {
@@ -129,21 +157,69 @@ async fn update_package(
     if old.is_some_and(|old| old.version == version && old.fingerprint == fingerprint) {
         return Ok(Outcome::Unchanged);
     }
-    if !package.derive.is_empty() {
-        return Err(Error::NotImplemented("derive"));
-    }
     let fetcher = fetch::Fetcher {
         client,
         nixpkgs: config.nix.nixpkgs.as_deref().unwrap_or("nixpkgs"),
-        flake_dir,
+        flake_dir: dirs.flake,
     };
-    let src = fetcher.fetch(&package.fetch, &version).await?;
-    Ok(Outcome::Updated(LockedPackage {
-        version,
-        src,
-        derived: BTreeMap::new(),
-        fingerprint,
-    }))
+    let source = fetcher.fetch(&package.fetch, &version).await?;
+
+    let deriver = derive::Deriver {
+        flake_dir: dirs.flake,
+    };
+    let dir_name = dirs
+        .lockfiles
+        .file_name()
+        .expect("the lock files directory is named after the config file")
+        .to_string_lossy();
+    let mut outputs = BTreeMap::new();
+    let mut files = Vec::new();
+    for (attr, spec) in &package.derive {
+        let entry = match deriver.derive(spec, &source.path).await? {
+            derive::Output::Hash(hash) => Derived::Hash(DerivedHash {
+                hash: hash.into(),
+                toolchain: None,
+            }),
+            derive::Output::Lockfile {
+                name: file,
+                content,
+            } => {
+                files.push((file, content));
+                Derived::Lockfile(DerivedLockfile {
+                    lockfile: format!("{dir_name}/{name}/{file}"),
+                })
+            }
+        };
+        outputs.insert(attr.clone(), entry);
+    }
+    Ok(Outcome::Updated(
+        Box::new(LockedPackage {
+            version,
+            src: source.source,
+            derived: outputs,
+            fingerprint,
+        }),
+        files,
+    ))
+}
+
+/// Replaces the lock files of one package; an empty list removes its directory.
+fn write_lockfiles(dir: &Path, files: &Lockfiles) -> Result<()> {
+    let io = |source| lock::LockError::Io {
+        path: dir.display().to_string(),
+        source,
+    };
+    match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io(e).into()),
+        _ => {}
+    }
+    if !files.is_empty() {
+        std::fs::create_dir_all(dir).map_err(io)?;
+    }
+    for (file, content) in files {
+        lock::write_atomic(&dir.join(file), content)?;
+    }
+    Ok(())
 }
 
 async fn join<T: 'static>(mut tasks: tokio::task::JoinSet<(String, T)>) -> BTreeMap<String, T> {

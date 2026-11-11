@@ -2,7 +2,8 @@ use miette::Diagnostic;
 use thiserror::Error;
 
 use crate::{
-    config::ConfigError, fetch::FetchError, http::HttpError, lock::LockError, source::SourceError,
+    config::ConfigError, derive::DeriveError, fetch::FetchError, http::HttpError, lock::LockError,
+    source::SourceError,
 };
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -21,6 +22,9 @@ pub enum Error {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Fetch(#[from] FetchError),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Derive(#[from] DeriveError),
     #[error(transparent)]
     #[diagnostic(transparent)]
     Http(#[from] HttpError),

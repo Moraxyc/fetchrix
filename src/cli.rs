@@ -20,6 +20,12 @@ impl Cli {
     pub fn lock_path(&self) -> PathBuf {
         self.config.with_extension("lock")
     }
+
+    /// Directory next to the lock file holding extracted lock files, one subdirectory per package.
+    #[must_use]
+    pub fn lockfiles_dir(&self) -> PathBuf {
+        self.config.with_extension("lockfiles")
+    }
 }
 
 #[derive(Debug, Subcommand)]
