@@ -103,6 +103,18 @@ pub enum LockedSource {
     },
 }
 
+impl LockedSource {
+    #[must_use]
+    pub fn hash(&self) -> &Hash {
+        match self {
+            Self::Url { hash, .. }
+            | Self::Tarball { hash, .. }
+            | Self::Github { hash, .. }
+            | Self::Git { hash, .. } => hash,
+        }
+    }
+}
+
 #[expect(
     clippy::trivially_copy_pass_by_ref,
     reason = "serde's skip_serializing_if passes a reference"

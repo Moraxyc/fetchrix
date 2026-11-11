@@ -8,6 +8,7 @@ pub mod http;
 pub mod lock;
 pub mod source;
 pub mod ui;
+pub mod verify;
 
 pub use error::{Error, Result};
 
@@ -19,6 +20,7 @@ use config::{Config, Package};
 use http::Client;
 use lock::{Derived, DerivedHash, DerivedLockfile, Lock, LockedPackage};
 use ui::{Progress, Stage, Ui};
+use verify::VerifyError;
 
 /// Runs the command selected on the command line.
 ///
@@ -37,7 +39,96 @@ pub async fn run(cli: &Cli) -> Result<()> {
             let selected = select(&config, selection)?;
             update(cli, config, lock, selected, selection.packages.is_empty()).await
         }
-        Command::Verify(_) => Err(Error::NotImplemented("verify")),
+        Command::Verify(selection) => {
+            let selected = select(&config, selection)?;
+            verify(cli, config, &lock, selected).await
+        }
+    }
+}
+
+async fn verify(cli: &Cli, config: Arc<Config>, lock: &Lock, selected: Vec<String>) -> Result<()> {
+    let client = Arc::new(Client::new(Credentials::load(&cli.access_token)?)?);
+    let flake_dir = Arc::new(fetch::flake_dir(&cli.config));
+    let out_dir = Arc::new(cli.out_dir.clone());
+    let ui = Ui::new(&selected);
+    let mut tasks = tokio::task::JoinSet::new();
+    for name in selected {
+        let client = Arc::clone(&client);
+        let config = Arc::clone(&config);
+        let flake_dir = Arc::clone(&flake_dir);
+        let out_dir = Arc::clone(&out_dir);
+        let locked = lock.packages.get(&name).cloned();
+        let progress = ui.package(&name);
+        tasks.spawn(async move {
+            let result = verify_package(
+                &client, &config, &flake_dir, &out_dir, &progress, &name, locked,
+            )
+            .await;
+            progress.done(result.is_ok());
+            (name, result)
+        });
+    }
+    let results = join(tasks).await;
+    ui.finish();
+
+    let mut failed = 0;
+    for (name, result) in results {
+        match result {
+            Ok(version) => println!("{name}: {version} ok"),
+            Err(e) => failed += fail(&name, e),
+        }
+    }
+    finish(failed)
+}
+
+/// Recomputes the hashes of the locked version and compares them, and the
+/// extracted lock files on disk, with the lock entry.
+async fn verify_package(
+    client: &Client,
+    config: &Config,
+    flake_dir: &Path,
+    out_dir: &Path,
+    progress: &Progress,
+    name: &str,
+    locked: Option<LockedPackage>,
+) -> Result<String> {
+    let locked = locked.ok_or(VerifyError::NotLocked)?;
+    let fingerprint = config.packages[name].fingerprint();
+    if locked.fingerprint != fingerprint {
+        return Err(VerifyError::Stale.into());
+    }
+    let (actual, files) = resolve(
+        client,
+        config,
+        flake_dir,
+        progress,
+        name,
+        locked.version.clone(),
+        fingerprint,
+    )
+    .await?;
+    let mut diffs = verify::compare(&locked, &actual);
+    for (file, content) in files {
+        let path = out_dir.join(name).join(lock::SRC_DIR).join(&file);
+        match tokio::fs::read(&path).await {
+            Ok(on_disk) if on_disk == content => {}
+            Ok(_) => diffs.push(format!("{}: differs from the source", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                diffs.push(format!("{}: missing", path.display()));
+            }
+            Err(source) => {
+                return Err(lock::LockError::Io {
+                    path: path.display().to_string(),
+                    source,
+                }
+                .into());
+            }
+        }
+    }
+    if diffs.is_empty() {
+        Ok(locked.version)
+    } else {
+        Err(VerifyError::Mismatch(diffs).into())
     }
 }
 
@@ -166,6 +257,30 @@ async fn update_package(
     if old.is_some_and(|old| old.version == version && old.fingerprint == fingerprint) {
         return Ok(Outcome::Unchanged);
     }
+    let (new, files) = resolve(
+        client,
+        config,
+        flake_dir,
+        progress,
+        name,
+        version,
+        fingerprint,
+    )
+    .await?;
+    Ok(Outcome::Updated(Box::new(new), files))
+}
+
+/// Fetches `version` of package `name` and computes its derived outputs.
+async fn resolve(
+    client: &Client,
+    config: &Config,
+    flake_dir: &Path,
+    progress: &Progress,
+    name: &str,
+    version: String,
+    fingerprint: String,
+) -> Result<(LockedPackage, Lockfiles)> {
+    let package: &Package = &config.packages[name];
     let fetcher = fetch::Fetcher {
         client,
         nixpkgs: config.nix.nixpkgs.as_deref().unwrap_or("nixpkgs"),
@@ -204,13 +319,13 @@ async fn update_package(
         };
         outputs.insert(attr.clone(), entry);
     }
-    Ok(Outcome::Updated(
-        Box::new(LockedPackage {
+    Ok((
+        LockedPackage {
             version,
             src: source.source,
             derived: outputs,
             fingerprint,
-        }),
+        },
         files,
     ))
 }

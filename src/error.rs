@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use crate::{
     auth::AuthError, config::ConfigError, derive::DeriveError, fetch::FetchError, http::HttpError,
-    lock::LockError, source::SourceError,
+    lock::LockError, source::SourceError, verify::VerifyError,
 };
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -31,13 +31,13 @@ pub enum Error {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Auth(#[from] AuthError),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Verify(#[from] VerifyError),
     #[error("{0} package(s) failed")]
     #[diagnostic(code(fetchrix::failed))]
     Failed(usize),
     #[error("unknown package `{0}`")]
     #[diagnostic(code(fetchrix::unknown_package))]
     UnknownPackage(String),
-    #[error("`{0}` is not implemented yet")]
-    #[diagnostic(code(fetchrix::not_implemented))]
-    NotImplemented(&'static str),
 }
