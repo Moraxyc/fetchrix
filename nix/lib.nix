@@ -4,8 +4,11 @@ rec {
     Reads the fetchrix output directory `dir` into
     `{ <name> = { version; src; <derived>...; }; }`.
 
-    A derived hash becomes its SRI string. An extracted lock file becomes
-    `{ lockFile; outputHashes; }`, which `cargoLock` accepts directly.
+    A derived hash becomes its SRI string. An extracted `Cargo.lock` becomes
+    `{ lockFile; outputHashes; }`, which `cargoLock` accepts directly. An
+    extracted `package-lock.json` becomes `{ npmRoot; package; packageLock; }`,
+    the arguments of `importNpmLock`; `npmRoot` points into `src` so local and
+    workspace dependencies resolve against the fetched source.
   */
   load =
     { pkgs, dir }:
@@ -27,25 +30,41 @@ rec {
         .${src.fetcher} or (throw "fetchrix: unknown fetcher `${src.fetcher}`");
 
       derive =
-        entry:
+        name: src: entry:
         if entry ? hash then
           entry.hash
         else
-          {
+          let
             lockFile = dir + "/${entry.lockfile}";
-            outputHashes = entry.outputHashes or { };
-          };
+            inSource = lib.removePrefix "${name}/src/" entry.lockfile;
+            subDir = dirOf inSource;
+          in
+          {
+            "Cargo.lock" = {
+              inherit lockFile;
+              outputHashes = entry.outputHashes or { };
+            };
+            "package-lock.json" = {
+              npmRoot = if subDir == "." then src else "${src}/${subDir}";
+              package = lib.importJSON (dirOf lockFile + "/package.json");
+              packageLock = lib.importJSON lockFile;
+            };
+          }
+          .${baseNameOf inSource} or (throw "fetchrix: unknown lock file `${entry.lockfile}`");
     in
     assert lib.assertMsg (
       parsed.schema == 1
     ) "fetchrix: unsupported lock schema ${toString parsed.schema}";
     lib.mapAttrs (
-      _: pkg:
+      name: pkg:
+      let
+        src = fetchSrc pkg.src;
+      in
       {
         inherit (pkg) version;
-        src = fetchSrc pkg.src;
+        inherit src;
       }
-      // lib.mapAttrs (_: derive) (pkg.derived or { })
+      // lib.mapAttrs (_: derive name src) (pkg.derived or { })
     ) parsed.packages;
 
   /**

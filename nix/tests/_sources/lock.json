@@ -12,10 +12,26 @@
       },
       "derived": {
         "cargoLock": {
-          "lockfile": "foo/Cargo.lock",
+          "lockfile": "foo/src/Cargo.lock",
           "outputHashes": { "bar-0.1.0": "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=" }
         },
         "npmDepsHash": { "hash": "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=" }
+      },
+      "fingerprint": "sha256-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
+    },
+    "web": {
+      "version": "0.1.0",
+      "src": {
+        "fetcher": "github",
+        "owner": "owner",
+        "repo": "web",
+        "rev": "v0.1.0",
+        "hash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      "derived": {
+        "npmDeps": {
+          "lockfile": "web/src/frontend/package-lock.json"
+        }
       },
       "fingerprint": "sha256-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
     },

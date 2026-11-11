@@ -5,7 +5,7 @@ Update package sources and derived hashes for Nix.
 ## Usage
 
 `fetchrix update` writes `_sources/lock.json` and extracted lock files under
-`_sources/<package>/`. Expose them through an overlay:
+`_sources/<package>/src/`. Expose them through an overlay:
 
 ```nix
 overlays.default = lib.composeManyExtensions [
@@ -15,9 +15,19 @@ overlays.default = lib.composeManyExtensions [
       pname = "foo";
       inherit (final.sources.foo) version src cargoLock;
     };
+    bar = final.buildNpmPackage {
+      pname = "bar";
+      inherit (final.sources.bar) version src;
+      npmDeps = final.importNpmLock final.sources.bar.npmDeps;
+      npmConfigHook = final.importNpmLock.npmConfigHook;
+    };
   })
 ];
 ```
+
+An `npm-deps` lock file yields `importNpmLock` arguments. Local and workspace
+dependencies resolve against the fetched `src`, so only `package.json` and
+`package-lock.json` are extracted.
 
 `fetchrix.lib.load { pkgs; dir; }` returns the same set without an overlay.
 

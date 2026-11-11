@@ -10,6 +10,9 @@ use thiserror::Error;
 pub const SCHEMA: u32 = 1;
 /// Name of the lock file inside the output directory.
 pub const FILE: &str = "lock.json";
+/// Directory inside `<out>/<package>/` that mirrors files copied from the
+/// source; siblings are left for files fetchrix generates.
+pub const SRC_DIR: &str = "src";
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum LockError {
@@ -124,7 +127,9 @@ pub struct DerivedHash {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DerivedLockfile {
-    /// Path relative to the directory of the lock file.
+    /// `<package>/src/<path in the source>`, relative to the directory of the
+    /// lock file. Its file name selects the consumer; companion files sit
+    /// beside it.
     pub lockfile: String,
     /// `importCargoLock` hashes of git dependencies, keyed by `name-version`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -258,6 +263,10 @@ mod tests {
             panic!("cargoLock is an extracted lock file");
         };
         assert_eq!(cargo.output_hashes.len(), 1);
+        let Derived::Lockfile(npm) = &lock.packages["web"].derived["npmDeps"] else {
+            panic!("npmDeps is an extracted lock file");
+        };
+        assert_eq!(npm.lockfile, "web/src/frontend/package-lock.json");
     }
 
     fn sample() -> String {

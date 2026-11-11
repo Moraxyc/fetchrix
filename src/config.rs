@@ -321,6 +321,9 @@ impl Config {
                     (Strategy::Lockfile, _, None) => {
                         Some("`strategy = \"lockfile\"` requires `kind`")
                     }
+                    _ if !d.sub_dir.as_deref().is_none_or(is_relative_dir) => Some(
+                        "`sub_dir` must be a relative path without `.`, `..`, or empty segments",
+                    ),
                     _ => None,
                 };
                 if let Some(message) = message {
@@ -334,6 +337,13 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// Whether `dir` stays inside the tree it is joined to; extracted lock files
+/// are written under the same relative path.
+fn is_relative_dir(dir: &str) -> bool {
+    dir.split('/')
+        .all(|segment| !matches!(segment, "" | "." | ".."))
 }
 
 #[cfg(test)]
@@ -429,5 +439,13 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn sub_dir_stays_inside_source() {
+        assert!(is_relative_dir("cmd/foo"));
+        for dir in ["", "/abs", "../up", "a/../b", "a//b", "a/", "./a"] {
+            assert!(!is_relative_dir(dir), "{dir}");
+        }
     }
 }

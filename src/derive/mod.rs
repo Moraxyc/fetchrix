@@ -29,6 +29,12 @@ pub enum DeriveError {
     #[error("invalid Cargo.lock: {0}")]
     #[diagnostic(code(fetchrix::derive::cargo_lock))]
     CargoLock(String),
+    #[error("invalid package-lock.json: {0}")]
+    #[diagnostic(
+        code(fetchrix::derive::npm_lock),
+        help("`importNpmLock` needs `lockfileVersion` 2 or later")
+    )]
+    NpmLock(String),
     #[error("{0} is not supported yet")]
     #[diagnostic(code(fetchrix::derive::unsupported))]
     Unsupported(&'static str),
@@ -39,8 +45,9 @@ type Result<T, E = DeriveError> = std::result::Result<T, E>;
 pub enum Output {
     Hash(NixHash),
     Lockfile {
-        name: &'static str,
-        content: Vec<u8>,
+        /// Paths relative to the source root, lock file first, then the
+        /// files its consumer reads beside it.
+        files: Vec<(String, Vec<u8>)>,
         /// `importCargoLock` hashes of git dependencies, keyed by `name-version`.
         output_hashes: BTreeMap<String, NixHash>,
     },
@@ -108,37 +115,46 @@ impl Deriver<'_> {
     }
 
     async fn lockfile(&self, spec: &DeriveSpec, src: &Path) -> Result<Output> {
-        let name = match spec.kind {
-            Some(DeriveKind::CargoVendor) => "Cargo.lock",
-            Some(DeriveKind::NpmDeps) => "package-lock.json",
+        let sub_dir = spec.sub_dir.as_deref();
+        let read = |name: &'static str| {
+            let rel = sub_dir.map_or_else(|| name.to_owned(), |dir| format!("{dir}/{name}"));
+            let path = src.join(&rel);
+            async move {
+                tokio::fs::read(&path)
+                    .await
+                    .map(|content| (rel, content))
+                    .map_err(|source| DeriveError::Io {
+                        context: format!("cannot read {name} from the source"),
+                        source,
+                    })
+            }
+        };
+        let mut output_hashes = BTreeMap::new();
+        let files = match spec.kind {
+            Some(DeriveKind::CargoVendor) => {
+                let lock = read("Cargo.lock").await?;
+                let mut hashes: BTreeMap<GitDep, NixHash> = BTreeMap::new();
+                for (key, dep) in cargo_git_deps(&lock.1)? {
+                    let hash = if let Some(hash) = hashes.get(&dep) {
+                        hash.clone()
+                    } else {
+                        let hash = self.fetcher.fetchgit_hash(&dep.url, &dep.rev).await?;
+                        hashes.insert(dep, hash.clone());
+                        hash
+                    };
+                    output_hashes.insert(key, hash);
+                }
+                vec![lock]
+            }
+            Some(DeriveKind::NpmDeps) => {
+                let lock = read("package-lock.json").await?;
+                check_npm_lock(&lock.1)?;
+                vec![lock, read("package.json").await?]
+            }
             None => return Err(DeriveError::Unsupported("`lockfile` without `kind`")),
         };
-        let path = src
-            .join(spec.sub_dir.as_deref().unwrap_or_default())
-            .join(name);
-        let content = tokio::fs::read(&path)
-            .await
-            .map_err(|source| DeriveError::Io {
-                context: format!("cannot read {name} from the source"),
-                source,
-            })?;
-        let mut output_hashes = BTreeMap::new();
-        if spec.kind == Some(DeriveKind::CargoVendor) {
-            let mut hashes: BTreeMap<GitDep, NixHash> = BTreeMap::new();
-            for (key, dep) in cargo_git_deps(&content)? {
-                let hash = if let Some(hash) = hashes.get(&dep) {
-                    hash.clone()
-                } else {
-                    let hash = self.fetcher.fetchgit_hash(&dep.url, &dep.rev).await?;
-                    hashes.insert(dep, hash.clone());
-                    hash
-                };
-                output_hashes.insert(key, hash);
-            }
-        }
         Ok(Output::Lockfile {
-            name,
-            content,
+            files,
             output_hashes,
         })
     }
@@ -201,6 +217,24 @@ fn cargo_git_deps(content: &[u8]) -> Result<Vec<(String, GitDep)>> {
         .collect()
 }
 
+/// Rejects lock files without the `packages` map that `importNpmLock` reads.
+fn check_npm_lock(content: &[u8]) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Lock {
+        lockfile_version: u32,
+    }
+    let lock: Lock =
+        serde_json::from_slice(content).map_err(|e| DeriveError::NpmLock(e.to_string()))?;
+    if lock.lockfile_version < 2 {
+        return Err(DeriveError::NpmLock(format!(
+            "lockfileVersion {} has no `packages`",
+            lock.lockfile_version
+        )));
+    }
+    Ok(())
+}
+
 fn nix_string(s: &str) -> String {
     let escaped = s
         .replace('\\', "\\\\")
@@ -250,6 +284,15 @@ mod tests {
                 }
             )]
         );
+    }
+
+    #[test]
+    fn checks_npm_lock_version() {
+        check_npm_lock(br#"{"lockfileVersion": 3, "packages": {}}"#).expect("v3 is supported");
+        assert!(matches!(
+            check_npm_lock(br#"{"lockfileVersion": 1, "dependencies": {}}"#),
+            Err(DeriveError::NpmLock(_))
+        ));
     }
 
     #[test]

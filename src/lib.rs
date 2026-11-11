@@ -79,8 +79,8 @@ enum Outcome {
     Updated(Box<LockedPackage>, Lockfiles),
 }
 
-/// Extracted lock files of one package, by file name.
-type Lockfiles = Vec<(&'static str, Vec<u8>)>;
+/// Extracted lock files of one package, by path relative to the source root.
+type Lockfiles = Vec<(String, Vec<u8>)>;
 
 async fn update(
     cli: &Cli,
@@ -187,13 +187,14 @@ async fn update_package(
         let entry = match deriver.derive(spec, &source.path).await? {
             derive::Output::Hash(hash) => Derived::Hash(DerivedHash { hash: hash.into() }),
             derive::Output::Lockfile {
-                name: file,
-                content,
+                files: extracted,
                 output_hashes,
             } => {
-                files.push((file, content));
+                let (first, _) = extracted.first().expect("the lock file comes first");
+                let lockfile = format!("{name}/{}/{first}", lock::SRC_DIR);
+                files.extend(extracted);
                 Derived::Lockfile(DerivedLockfile {
-                    lockfile: format!("{name}/{file}"),
+                    lockfile,
                     output_hashes: output_hashes
                         .into_iter()
                         .map(|(k, v)| (k, v.into()))
@@ -224,11 +225,12 @@ fn write_lockfiles(dir: &Path, files: &Lockfiles) -> Result<()> {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io(e).into()),
         _ => {}
     }
-    if !files.is_empty() {
-        std::fs::create_dir_all(dir).map_err(io)?;
-    }
     for (file, content) in files {
-        lock::write_atomic(&dir.join(file), content)?;
+        let path = dir.join(lock::SRC_DIR).join(file);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(io)?;
+        }
+        lock::write_atomic(&path, content)?;
     }
     Ok(())
 }
