@@ -1,4 +1,9 @@
-{ lib, rustPlatform }:
+{
+  lib,
+  rustPlatform,
+  aws-lc,
+  pkg-config,
+}:
 let
   manifest = lib.importTOML ../Cargo.toml;
 in
@@ -14,6 +19,9 @@ rustPlatform.buildRustPackage {
       ../src
     ];
   };
+
+  nativeBuildInputs = [ pkg-config ];
+  buildInputs = [ aws-lc ];
 
   cargoLock = {
     lockFile = ../Cargo.lock;

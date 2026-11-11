@@ -57,7 +57,7 @@ pub struct Package {
     pub derive: BTreeMap<String, DeriveSpec>,
 }
 
-#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "source", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum VersionSpec {
     GithubRelease {
@@ -83,7 +83,7 @@ pub enum VersionSpec {
     },
     Regex {
         url: String,
-        regex: String,
+        regex: Pattern,
     },
     Manual {
         version: String,
@@ -180,6 +180,34 @@ impl TryFrom<String> for GitHubRepo {
 impl fmt::Display for GitHubRepo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.owner, self.name)
+    }
+}
+
+/// A regular expression; the first capture group, if any, is the version.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Pattern(regex::Regex);
+
+impl Pattern {
+    #[must_use]
+    pub fn as_regex(&self) -> &regex::Regex {
+        &self.0
+    }
+}
+
+impl PartialEq for Pattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_str() == other.0.as_str()
+    }
+}
+
+impl Eq for Pattern {}
+
+impl TryFrom<String> for Pattern {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        regex::Regex::new(&s).map(Self).map_err(|e| e.to_string())
     }
 }
 

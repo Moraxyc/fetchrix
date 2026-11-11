@@ -9,6 +9,8 @@ pub mod ui;
 
 pub use error::{Error, Result};
 
+use std::{collections::BTreeMap, sync::Arc};
+
 use cli::{Cli, Command, Selection};
 use config::Config;
 use lock::Lock;
@@ -18,16 +20,51 @@ use lock::Lock;
 /// # Errors
 ///
 /// Returns an error if the command fails.
-pub fn run(cli: &Cli) -> Result<()> {
+pub async fn run(cli: &Cli) -> Result<()> {
     let config = Config::load(&cli.config)?;
-    let _lock = Lock::load(&cli.lock_path())?;
-    let (name, selection) = match &cli.command {
-        Command::Update(s) => ("update", s),
-        Command::Check(s) => ("check", s),
-        Command::Verify(s) => ("verify", s),
-    };
-    select(&config, selection)?;
-    Err(Error::NotImplemented(name))
+    let lock = Lock::load(&cli.lock_path())?;
+    match &cli.command {
+        Command::Check(selection) => {
+            let selected = select(&config, selection)?;
+            check(cli, &config, &lock, &selected).await
+        }
+        Command::Update(_) => Err(Error::NotImplemented("update")),
+        Command::Verify(_) => Err(Error::NotImplemented("verify")),
+    }
+}
+
+async fn check(cli: &Cli, config: &Config, lock: &Lock, selected: &[&str]) -> Result<()> {
+    let client = Arc::new(source::Client::new(cli.github_token.clone())?);
+    let mut tasks = tokio::task::JoinSet::new();
+    for &name in selected {
+        let client = Arc::clone(&client);
+        let spec = config.packages[name].version.clone();
+        let name = name.to_owned();
+        tasks.spawn(async move { (name, client.latest(&spec).await) });
+    }
+    let mut results = BTreeMap::new();
+    while let Some(joined) = tasks.join_next().await {
+        let (name, result) = joined.expect("version queries do not panic");
+        results.insert(name, result);
+    }
+
+    let mut failed = 0;
+    for (name, result) in results {
+        match (result, lock.packages.get(&name)) {
+            (Ok(new), Some(old)) if old.version == new => println!("{name}: {new}"),
+            (Ok(new), Some(old)) => println!("{name}: {} -> {new}", old.version),
+            (Ok(new), None) => println!("{name}: {new} (new)"),
+            (Err(e), _) => {
+                failed += 1;
+                eprintln!("{:?}", miette::Report::new(e).wrap_err(name));
+            }
+        }
+    }
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(Error::Failed(failed))
+    }
 }
 
 fn select<'a>(config: &'a Config, selection: &'a Selection) -> Result<Vec<&'a str>> {

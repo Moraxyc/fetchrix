@@ -1,7 +1,7 @@
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::{config::ConfigError, lock::LockError};
+use crate::{config::ConfigError, lock::LockError, source::SourceError};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -13,6 +13,12 @@ pub enum Error {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Lock(#[from] LockError),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Source(#[from] SourceError),
+    #[error("{0} package(s) failed")]
+    #[diagnostic(code(fetchrix::failed))]
+    Failed(usize),
     #[error("unknown package `{0}`")]
     #[diagnostic(code(fetchrix::unknown_package))]
     UnknownPackage(String),

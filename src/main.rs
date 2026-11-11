@@ -1,7 +1,8 @@
 use clap::Parser;
 use fetchrix::cli::Cli;
 
-fn main() -> miette::Result<()> {
-    fetchrix::run(&Cli::parse())?;
+#[tokio::main]
+async fn main() -> miette::Result<()> {
+    fetchrix::run(&Cli::parse()).await?;
     Ok(())
 }

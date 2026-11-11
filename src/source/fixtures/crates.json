@@ -1,0 +1,8 @@
+{
+  "crate": {
+    "name": "serde",
+    "max_version": "1.0.229",
+    "max_stable_version": "1.0.229",
+    "newest_version": "1.0.229"
+  }
+}
