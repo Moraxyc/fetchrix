@@ -1,0 +1,18 @@
+[package]
+name = "fetchrix"
+version = "0.1.0"
+edition = "2024"
+description = "Update package sources and derived hashes for Nix"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+miette = { version = "7", features = ["fancy"] }
+thiserror = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
