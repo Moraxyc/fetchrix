@@ -16,6 +16,7 @@ use cli::{Cli, Command, Selection};
 use config::{Config, Package};
 use http::Client;
 use lock::{Derived, DerivedHash, DerivedLockfile, Lock, LockedPackage};
+use ui::{Progress, Stage, Ui};
 
 /// Runs the command selected on the command line.
 ///
@@ -40,14 +41,22 @@ pub async fn run(cli: &Cli) -> Result<()> {
 
 async fn check(cli: &Cli, config: &Config, lock: &Lock, selected: &[String]) -> Result<()> {
     let client = Arc::new(Client::new(cli.github_token.clone())?);
+    let ui = Ui::new(selected);
     let mut tasks = tokio::task::JoinSet::new();
     for name in selected {
         let client = Arc::clone(&client);
         let spec = config.packages[name].version.clone();
+        let progress = ui.package(name);
         let name = name.clone();
-        tasks.spawn(async move { (name, source::latest(&client, &spec).await) });
+        tasks.spawn(async move {
+            progress.stage(Stage::Check);
+            let result = source::latest(&client, &spec).await;
+            progress.done(result.is_ok());
+            (name, result)
+        });
     }
     let results = join(tasks).await;
+    ui.finish();
 
     let mut failed = 0;
     for (name, result) in results {
@@ -81,6 +90,7 @@ async fn update(
     let client = Arc::new(Client::new(cli.github_token.clone())?);
     let flake_dir = Arc::new(fetch::flake_dir(&cli.config));
     let lockfiles_dir = Arc::new(cli.lockfiles_dir());
+    let ui = Ui::new(&selected);
     let mut tasks = tokio::task::JoinSet::new();
     for name in selected {
         let client = Arc::clone(&client);
@@ -88,16 +98,19 @@ async fn update(
         let flake_dir = Arc::clone(&flake_dir);
         let lockfiles_dir = Arc::clone(&lockfiles_dir);
         let old = lock.packages.get(&name).cloned();
+        let progress = ui.package(&name);
         tasks.spawn(async move {
             let dirs = Dirs {
                 flake: &flake_dir,
                 lockfiles: &lockfiles_dir,
             };
-            let result = update_package(&client, &config, dirs, &name, old).await;
+            let result = update_package(&client, &config, dirs, &progress, &name, old).await;
+            progress.done(result.is_ok());
             (name, result)
         });
     }
     let results = join(tasks).await;
+    ui.finish();
 
     let original = lock.clone();
     let mut failed = 0;
@@ -148,10 +161,12 @@ async fn update_package(
     client: &Client,
     config: &Config,
     dirs: Dirs<'_>,
+    progress: &Progress,
     name: &str,
     old: Option<LockedPackage>,
 ) -> Result<Outcome> {
     let package: &Package = &config.packages[name];
+    progress.stage(Stage::Check);
     let version = source::latest(client, &package.version).await?;
     let fingerprint = package.fingerprint();
     if old.is_some_and(|old| old.version == version && old.fingerprint == fingerprint) {
@@ -162,7 +177,11 @@ async fn update_package(
         nixpkgs: config.nix.nixpkgs.as_deref().unwrap_or("nixpkgs"),
         flake_dir: dirs.flake,
     };
+    progress.stage(Stage::Fetch);
     let source = fetcher.fetch(&package.fetch, &version).await?;
+    if !package.derive.is_empty() {
+        progress.stage(Stage::Derive);
+    }
 
     let deriver = derive::Deriver {
         flake_dir: dirs.flake,
