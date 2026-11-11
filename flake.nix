@@ -18,12 +18,20 @@
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       systems = inputs.nixpkgs.lib.systems.flakeExposed;
 
-      imports = [ inputs.treefmt-nix.flakeModule ];
+      imports = [
+        inputs.flake-parts.flakeModules.easyOverlay
+        inputs.treefmt-nix.flakeModule
+      ];
 
       perSystem =
         { config, pkgs, ... }:
         {
-          packages.default = pkgs.callPackage ./nix/package.nix { };
+          packages = {
+            fetchrix = pkgs.callPackage ./nix/package.nix { };
+            default = config.packages.fetchrix;
+          };
+
+          overlayAttrs = { inherit (config.packages) fetchrix; };
 
           checks = {
             package = config.packages.default;

@@ -19,6 +19,7 @@ rustPlatform.buildRustPackage {
 
   meta = {
     inherit (manifest.package) description;
+    homepage = manifest.package.repository;
     license = with lib.licenses; [
       mit
       asl20
