@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const SCHEMA: u32 = 1;
+/// Name of the lock file inside the output directory.
+pub const FILE: &str = "lock.json";
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum LockError {
@@ -120,10 +122,13 @@ pub struct DerivedHash {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DerivedLockfile {
     /// Path relative to the directory of the lock file.
     pub lockfile: String,
+    /// `importCargoLock` hashes of git dependencies, keyed by `name-version`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_hashes: BTreeMap<String, Hash>,
 }
 
 /// A hash written in SRI form, such as `sha256-<base64>`.
@@ -244,6 +249,16 @@ mod tests {
     use super::*;
 
     const HASH: &str = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+
+    #[test]
+    fn parses_nix_lib_fixture() {
+        let text = include_str!("../../nix/tests/_sources/lock.json");
+        let lock = Lock::parse(FILE, text.to_owned()).expect("the fixture is valid");
+        let Derived::Lockfile(cargo) = &lock.packages["foo"].derived["cargoLock"] else {
+            panic!("cargoLock is an extracted lock file");
+        };
+        assert_eq!(cargo.output_hashes.len(), 1);
+    }
 
     fn sample() -> String {
         format!(

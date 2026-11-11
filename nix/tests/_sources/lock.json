@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "packages": {
+    "foo": {
+      "version": "1.2.3",
+      "src": {
+        "fetcher": "github",
+        "owner": "owner",
+        "repo": "foo",
+        "rev": "v1.2.3",
+        "hash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      "derived": {
+        "cargoLock": {
+          "lockfile": "foo/Cargo.lock",
+          "outputHashes": { "bar-0.1.0": "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=" }
+        },
+        "npmDepsHash": { "hash": "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=" }
+      },
+      "fingerprint": "sha256-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
+    },
+    "baz": {
+      "version": "0.1.0",
+      "src": {
+        "fetcher": "git",
+        "url": "https://example.com/baz.git",
+        "rev": "0123456789abcdef0123456789abcdef01234567",
+        "hash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      "fingerprint": "sha256-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
+    }
+  }
+}

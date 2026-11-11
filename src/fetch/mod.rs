@@ -137,6 +137,16 @@ impl Fetcher<'_> {
         })
     }
 
+    /// Hashes `url` at `rev` as `fetchgit` does with its default arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-prefetch-git` fails.
+    pub async fn fetchgit_hash(&self, url: &str, rev: &str) -> Result<NixHash> {
+        let (hash, _, _) = self.prefetch_git(url, rev, true, false, &[]).await?;
+        Ok(hash)
+    }
+
     async fn download(&self, url: &str) -> Result<(TempDir, PathBuf)> {
         let work = tempfile::tempdir().map_err(io("cannot create a temporary directory"))?;
         let path = work.path().join("download");

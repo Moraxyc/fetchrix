@@ -27,7 +27,9 @@ pub enum ConfigError {
     #[error("invalid package name `{0}`")]
     #[diagnostic(
         code(fetchrix::config::name),
-        help("use ASCII letters, digits, `.`, `_`, and `-`, not starting with `.`")
+        help(
+            "use ASCII letters, digits, `.`, `_`, and `-`, not starting with `.` and not `lock.json`"
+        )
     )]
     InvalidName(String),
     #[error("package `{package}`, derive `{derive}`: {message}")]
@@ -160,7 +162,6 @@ pub enum DeriveKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Strategy {
-    Native,
     Lockfile,
     Fod,
 }
@@ -304,6 +305,7 @@ impl Config {
     fn validate(&self) -> Result<(), ConfigError> {
         for (package, spec) in &self.packages {
             let valid_name = !package.starts_with('.')
+                && package != crate::lock::FILE
                 && package
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
@@ -313,11 +315,11 @@ impl Config {
             for (derive, d) in &spec.derive {
                 let message = match (d.strategy, &d.attr, d.kind) {
                     (Strategy::Fod, None, _) => Some("`strategy = \"fod\"` requires `attr`"),
-                    (Strategy::Native | Strategy::Lockfile, Some(_), _) => {
+                    (Strategy::Lockfile, Some(_), _) => {
                         Some("`attr` is only used with `strategy = \"fod\"`")
                     }
-                    (Strategy::Native | Strategy::Lockfile, _, None) => {
-                        Some("`strategy = \"native\"` and `\"lockfile\"` require `kind`")
+                    (Strategy::Lockfile, _, None) => {
+                        Some("`strategy = \"lockfile\"` requires `kind`")
                     }
                     _ => None,
                 };

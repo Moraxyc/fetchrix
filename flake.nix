@@ -23,6 +23,8 @@
         inputs.treefmt-nix.flakeModule
       ];
 
+      flake.lib = import ./nix/lib.nix { inherit (inputs.nixpkgs) lib; };
+
       perSystem =
         { config, pkgs, ... }:
         {
@@ -35,6 +37,7 @@
 
           checks = {
             package = config.packages.default;
+            lib = pkgs.callPackage ./nix/tests/lib.nix { fetchrixLib = inputs.self.lib; };
             clippy = config.packages.default.overrideAttrs (old: {
               pname = "${old.pname}-clippy";
               nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];

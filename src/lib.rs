@@ -91,22 +91,16 @@ async fn update(
 ) -> Result<()> {
     let client = Arc::new(Client::new(Credentials::load(&cli.access_token)?)?);
     let flake_dir = Arc::new(fetch::flake_dir(&cli.config));
-    let lockfiles_dir = Arc::new(cli.lockfiles_dir());
     let ui = Ui::new(&selected);
     let mut tasks = tokio::task::JoinSet::new();
     for name in selected {
         let client = Arc::clone(&client);
         let config = Arc::clone(&config);
         let flake_dir = Arc::clone(&flake_dir);
-        let lockfiles_dir = Arc::clone(&lockfiles_dir);
         let old = lock.packages.get(&name).cloned();
         let progress = ui.package(&name);
         tasks.spawn(async move {
-            let dirs = Dirs {
-                flake: &flake_dir,
-                lockfiles: &lockfiles_dir,
-            };
-            let result = update_package(&client, &config, dirs, &progress, &name, old).await;
+            let result = update_package(&client, &config, &flake_dir, &progress, &name, old).await;
             progress.done(result.is_ok());
             (name, result)
         });
@@ -145,24 +139,22 @@ async fn update(
         }
     }
     for (name, files) in lockfiles {
-        write_lockfiles(&lockfiles_dir.join(name), &files)?;
+        write_lockfiles(&cli.out_dir.join(name), &files)?;
     }
     if lock != original {
+        std::fs::create_dir_all(&cli.out_dir).map_err(|source| lock::LockError::Io {
+            path: cli.out_dir.display().to_string(),
+            source,
+        })?;
         lock.save(&cli.lock_path())?;
     }
     finish(failed)
 }
 
-#[derive(Clone, Copy)]
-struct Dirs<'a> {
-    flake: &'a Path,
-    lockfiles: &'a Path,
-}
-
 async fn update_package(
     client: &Client,
     config: &Config,
-    dirs: Dirs<'_>,
+    flake_dir: &Path,
     progress: &Progress,
     name: &str,
     old: Option<LockedPackage>,
@@ -177,7 +169,7 @@ async fn update_package(
     let fetcher = fetch::Fetcher {
         client,
         nixpkgs: config.nix.nixpkgs.as_deref().unwrap_or("nixpkgs"),
-        flake_dir: dirs.flake,
+        flake_dir,
     };
     progress.stage(Stage::Fetch);
     let source = fetcher.fetch(&package.fetch, &version).await?;
@@ -186,13 +178,9 @@ async fn update_package(
     }
 
     let deriver = derive::Deriver {
-        flake_dir: dirs.flake,
+        fetcher: &fetcher,
+        flake_dir,
     };
-    let dir_name = dirs
-        .lockfiles
-        .file_name()
-        .expect("the lock files directory is named after the config file")
-        .to_string_lossy();
     let mut outputs = BTreeMap::new();
     let mut files = Vec::new();
     for (attr, spec) in &package.derive {
@@ -201,10 +189,15 @@ async fn update_package(
             derive::Output::Lockfile {
                 name: file,
                 content,
+                output_hashes,
             } => {
                 files.push((file, content));
                 Derived::Lockfile(DerivedLockfile {
-                    lockfile: format!("{dir_name}/{name}/{file}"),
+                    lockfile: format!("{name}/{file}"),
+                    output_hashes: output_hashes
+                        .into_iter()
+                        .map(|(k, v)| (k, v.into()))
+                        .collect(),
                 })
             }
         };

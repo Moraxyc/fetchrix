@@ -1,12 +1,15 @@
 //! Hashes and lock files derived from a fetched source.
 
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use miette::Diagnostic;
 use nix_compat::nixhash::NixHash;
 use thiserror::Error;
 
-use crate::config::{DeriveKind, DeriveSpec, Strategy};
+use crate::{
+    config::{DeriveKind, DeriveSpec, Strategy},
+    fetch::{FetchError, Fetcher},
+};
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum DeriveError {
@@ -20,6 +23,12 @@ pub enum DeriveError {
     #[error("{0}")]
     #[diagnostic(code(fetchrix::derive::nix))]
     Nix(String),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Fetch(#[from] FetchError),
+    #[error("invalid Cargo.lock: {0}")]
+    #[diagnostic(code(fetchrix::derive::cargo_lock))]
+    CargoLock(String),
     #[error("{0} is not supported yet")]
     #[diagnostic(code(fetchrix::derive::unsupported))]
     Unsupported(&'static str),
@@ -32,10 +41,13 @@ pub enum Output {
     Lockfile {
         name: &'static str,
         content: Vec<u8>,
+        /// `importCargoLock` hashes of git dependencies, keyed by `name-version`.
+        output_hashes: BTreeMap<String, NixHash>,
     },
 }
 
 pub struct Deriver<'a> {
+    pub fetcher: &'a Fetcher<'a>,
     /// Directory that relative flake references in `attr` resolve against.
     pub flake_dir: &'a Path,
 }
@@ -55,8 +67,7 @@ impl Deriver<'_> {
                     .ok_or(DeriveError::Unsupported("`fod` without `attr`"))?;
                 self.fod(attr, src).await.map(Output::Hash)
             }
-            Strategy::Lockfile => lockfile(spec, src).await,
-            Strategy::Native => Err(DeriveError::Unsupported("`strategy = \"native\"`")),
+            Strategy::Lockfile => self.lockfile(spec, src).await,
         }
     }
 
@@ -96,6 +107,42 @@ impl Deriver<'_> {
             .map_err(|e| DeriveError::Nix(format!("unexpected hash `{got}`: {e}")))
     }
 
+    async fn lockfile(&self, spec: &DeriveSpec, src: &Path) -> Result<Output> {
+        let name = match spec.kind {
+            Some(DeriveKind::CargoVendor) => "Cargo.lock",
+            Some(DeriveKind::NpmDeps) => "package-lock.json",
+            None => return Err(DeriveError::Unsupported("`lockfile` without `kind`")),
+        };
+        let path = src
+            .join(spec.sub_dir.as_deref().unwrap_or_default())
+            .join(name);
+        let content = tokio::fs::read(&path)
+            .await
+            .map_err(|source| DeriveError::Io {
+                context: format!("cannot read {name} from the source"),
+                source,
+            })?;
+        let mut output_hashes = BTreeMap::new();
+        if spec.kind == Some(DeriveKind::CargoVendor) {
+            let mut hashes: BTreeMap<GitDep, NixHash> = BTreeMap::new();
+            for (key, dep) in cargo_git_deps(&content)? {
+                let hash = if let Some(hash) = hashes.get(&dep) {
+                    hash.clone()
+                } else {
+                    let hash = self.fetcher.fetchgit_hash(&dep.url, &dep.rev).await?;
+                    hashes.insert(dep, hash.clone());
+                    hash
+                };
+                output_hashes.insert(key, hash);
+            }
+        }
+        Ok(Output::Lockfile {
+            name,
+            content,
+            output_hashes,
+        })
+    }
+
     async fn nix(&self, args: &[&str]) -> Result<std::process::Output> {
         tokio::process::Command::new("nix")
             .args(args)
@@ -110,22 +157,48 @@ impl Deriver<'_> {
     }
 }
 
-async fn lockfile(spec: &DeriveSpec, src: &Path) -> Result<Output> {
-    let name = match spec.kind {
-        Some(DeriveKind::CargoVendor) => "Cargo.lock",
-        Some(DeriveKind::NpmDeps) => "package-lock.json",
-        None => return Err(DeriveError::Unsupported("`lockfile` without `kind`")),
-    };
-    let path = src
-        .join(spec.sub_dir.as_deref().unwrap_or_default())
-        .join(name);
-    let content = tokio::fs::read(&path)
-        .await
-        .map_err(|source| DeriveError::Io {
-            context: format!("cannot read {name} from the source"),
-            source,
-        })?;
-    Ok(Output::Lockfile { name, content })
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct GitDep {
+    url: String,
+    rev: String,
+}
+
+/// Git dependencies of a Cargo.lock, keyed by `name-version` as
+/// `importCargoLock` expects.
+fn cargo_git_deps(content: &[u8]) -> Result<Vec<(String, GitDep)>> {
+    #[derive(serde::Deserialize)]
+    struct Lock {
+        #[serde(default)]
+        package: Vec<Package>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Package {
+        name: String,
+        version: String,
+        source: Option<String>,
+    }
+    let text = std::str::from_utf8(content).map_err(|e| DeriveError::CargoLock(e.to_string()))?;
+    let lock: Lock = toml::from_str(text).map_err(|e| DeriveError::CargoLock(e.to_string()))?;
+    lock.package
+        .into_iter()
+        .filter_map(|p| {
+            let source = p.source?.strip_prefix("git+")?.to_owned();
+            Some((p.name, p.version, source))
+        })
+        .map(|(name, version, source)| {
+            let (url, rev) = source.split_once('#').ok_or_else(|| {
+                DeriveError::CargoLock(format!("git source without a commit: {source}"))
+            })?;
+            let url = url.split_once('?').map_or(url, |(url, _)| url);
+            Ok((
+                format!("{name}-{version}"),
+                GitDep {
+                    url: url.to_owned(),
+                    rev: rev.to_owned(),
+                },
+            ))
+        })
+        .collect()
 }
 
 fn nix_string(s: &str) -> String {
@@ -146,6 +219,38 @@ fn tail(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_cargo_git_deps() {
+        let lock = br#"
+            version = 4
+
+            [[package]]
+            name = "app"
+            version = "0.1.0"
+
+            [[package]]
+            name = "serde"
+            version = "1.0.0"
+            source = "registry+https://github.com/rust-lang/crates.io-index"
+            checksum = "00"
+
+            [[package]]
+            name = "nix-compat"
+            version = "0.1.0"
+            source = "git+https://git.snix.dev/snix/snix.git?branch=canon#abc123"
+        "#;
+        assert_eq!(
+            cargo_git_deps(lock).expect("the lock is valid"),
+            [(
+                "nix-compat-0.1.0".to_owned(),
+                GitDep {
+                    url: "https://git.snix.dev/snix/snix.git".to_owned(),
+                    rev: "abc123".to_owned(),
+                }
+            )]
+        );
+    }
 
     #[test]
     fn escapes_nix_strings() {

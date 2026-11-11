@@ -2,6 +2,25 @@
 
 Update package sources and derived hashes for Nix.
 
+## Usage
+
+`fetchrix update` writes `_sources/lock.json` and extracted lock files under
+`_sources/<package>/`. Expose them through an overlay:
+
+```nix
+overlays.default = lib.composeManyExtensions [
+  (fetchrix.lib.overlay { dir = ./_sources; }) # attr defaults to "sources"
+  (final: prev: {
+    foo = final.rustPlatform.buildRustPackage {
+      pname = "foo";
+      inherit (final.sources.foo) version src cargoLock;
+    };
+  })
+];
+```
+
+`fetchrix.lib.load { pkgs; dir; }` returns the same set without an overlay.
+
 ## Development
 
 ```sh

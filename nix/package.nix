@@ -17,6 +17,7 @@ rustPlatform.buildRustPackage {
       ../Cargo.toml
       ../Cargo.lock
       ../src
+      ./tests/_sources/lock.json
     ];
   };
 

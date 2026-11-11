@@ -7,9 +7,12 @@ use crate::auth::HostToken;
 #[derive(Debug, Parser)]
 #[command(version, about)]
 pub struct Cli {
-    /// Configuration file; the lock file is written next to it with a `.lock` extension.
+    /// Configuration file.
     #[arg(short, long, global = true, default_value = "fetchrix.toml")]
     pub config: PathBuf,
+    /// Output directory holding `lock.json` and extracted lock files, one subdirectory per package.
+    #[arg(short, long, global = true, default_value = "_sources")]
+    pub out_dir: PathBuf,
     /// Bearer token for requests to HOST, overriding environment tokens and netrc; repeatable.
     #[arg(long, global = true, value_name = "HOST=TOKEN")]
     pub access_token: Vec<HostToken>,
@@ -20,13 +23,7 @@ pub struct Cli {
 impl Cli {
     #[must_use]
     pub fn lock_path(&self) -> PathBuf {
-        self.config.with_extension("lock")
-    }
-
-    /// Directory next to the lock file holding extracted lock files, one subdirectory per package.
-    #[must_use]
-    pub fn lockfiles_dir(&self) -> PathBuf {
-        self.config.with_extension("lockfiles")
+        self.out_dir.join(crate::lock::FILE)
     }
 }
 
