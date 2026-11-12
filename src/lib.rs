@@ -122,7 +122,8 @@ async fn verify_package(
         flake_dir,
         progress,
         name,
-        locked.version.clone(),
+        locked.raw_version().to_owned(),
+        |_| Ok(locked.version.clone()),
         fingerprint,
     )
     .await?;
@@ -180,9 +181,10 @@ async fn check(
         .into_iter()
         .map(|(name, result)| {
             let status = match result {
-                Ok(new) => {
-                    Status::changed(lock.packages.get(&name).map(|p| p.version.as_str()), new)
-                }
+                Ok(new) => Status::changed(
+                    lock.packages.get(&name).map(LockedPackage::raw_version),
+                    new,
+                ),
                 Err(e) => fail(&name, e.into()),
             };
             Entry { name, status }
@@ -303,9 +305,9 @@ async fn update_package(
 ) -> Result<Outcome> {
     let package: &Package = &config.packages[name];
     progress.stage(Stage::Check);
-    let version = source::latest(client, &package.version).await?;
+    let raw = source::latest(client, &package.version).await?;
     let fingerprint = package.fingerprint();
-    if old.is_some_and(|old| old.version == version && old.fingerprint == fingerprint) {
+    if old.is_some_and(|old| old.raw_version() == raw && old.fingerprint == fingerprint) {
         return Ok(Outcome::Unchanged);
     }
     let (new, files) = resolve(
@@ -314,21 +316,28 @@ async fn update_package(
         flake_dir,
         progress,
         name,
-        version,
+        raw.clone(),
+        |_| Ok(raw.clone()),
         fingerprint,
     )
     .await?;
     Ok(Outcome::Updated(Box::new(new), files))
 }
 
-/// Fetches `version` of package `name` and computes its derived outputs.
+/// Fetches upstream version `raw` of package `name` and computes its derived
+/// outputs; `version` turns the commit date of the source into the version.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "private helper shared by update and verify"
+)]
 async fn resolve(
     client: &Client,
     config: &Config,
     flake_dir: &Path,
     progress: &Progress,
     name: &str,
-    version: String,
+    raw: String,
+    version: impl FnOnce(Option<&str>) -> Result<String>,
     fingerprint: String,
 ) -> Result<(LockedPackage, Lockfiles)> {
     let package: &Package = &config.packages[name];
@@ -338,7 +347,8 @@ async fn resolve(
         flake_dir,
     };
     progress.stage(Stage::Fetch);
-    let source = fetcher.fetch(&package.fetch, &version).await?;
+    let source = fetcher.fetch(&package.fetch, &raw).await?;
+    let version = version(source.date.as_deref())?;
     if !package.derive.is_empty() {
         progress.stage(Stage::Derive);
     }
@@ -372,6 +382,7 @@ async fn resolve(
     }
     Ok((
         LockedPackage {
+            raw_version: (raw != version).then_some(raw),
             version,
             date: source.date,
             src: source.source,
@@ -449,4 +460,3 @@ fn select(config: &Config, selection: &Selection) -> Result<Vec<String>> {
         })
         .collect()
 }
-

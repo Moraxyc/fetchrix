@@ -30,6 +30,8 @@ let
   };
 in
 assert foo.version == "1.2.3";
+assert foo.rawVersion == "v1.2.3";
+assert !(web ? rawVersion);
 assert foo.src.outputHash == "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 assert foo.npmDepsHash == "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=";
 assert foo.cargoLock.lockFile == ./_sources/foo/src/Cargo.lock;

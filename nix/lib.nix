@@ -63,6 +63,7 @@ rec {
       {
         inherit (pkg) version;
       }
+      // lib.optionalAttrs (pkg ? rawVersion) { inherit (pkg) rawVersion; }
       // lib.optionalAttrs (pkg ? date) { inherit (pkg) date; }
       // {
         inherit src;

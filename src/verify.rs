@@ -100,6 +100,7 @@ mod tests {
     fn package(src: &str, vendor: &str, git: &str) -> LockedPackage {
         LockedPackage {
             version: "1.0.0".into(),
+            raw_version: None,
             date: None,
             src: LockedSource::Url {
                 url: "https://example.org/foo.tar.gz".into(),

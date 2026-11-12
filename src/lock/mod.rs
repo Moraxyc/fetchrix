@@ -57,6 +57,13 @@ impl Default for Lock {
 #[serde(deny_unknown_fields)]
 pub struct LockedPackage {
     pub version: String,
+    /// The upstream version before conversion; absent when equal to `version`.
+    #[serde(
+        default,
+        rename = "rawVersion",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub raw_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
     pub src: LockedSource,
@@ -103,6 +110,14 @@ pub enum LockedSource {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         sparse_checkout: Vec<String>,
     },
+}
+
+impl LockedPackage {
+    /// The upstream version that fetch templates were rendered with.
+    #[must_use]
+    pub fn raw_version(&self) -> &str {
+        self.raw_version.as_deref().unwrap_or(&self.version)
+    }
 }
 
 impl LockedSource {

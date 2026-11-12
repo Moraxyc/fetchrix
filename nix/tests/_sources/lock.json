@@ -3,6 +3,7 @@
   "packages": {
     "foo": {
       "version": "1.2.3",
+      "rawVersion": "v1.2.3",
       "src": {
         "fetcher": "github",
         "owner": "owner",
