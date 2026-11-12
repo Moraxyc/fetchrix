@@ -67,6 +67,15 @@ pub struct Fetcher<'a> {
     pub flake_dir: &'a Path,
 }
 
+/// The ref Nix fetchers resolve: `tag` becomes `refs/tags/<tag>`.
+fn git_ref(rev: Option<&str>, tag: Option<&str>) -> String {
+    match (rev, tag) {
+        (_, Some(tag)) => format!("refs/tags/{tag}"),
+        (Some(rev), None) => rev.to_owned(),
+        (None, None) => unreachable!("configuration validation requires `rev` or `tag`"),
+    }
+}
+
 impl Fetcher<'_> {
     /// Downloads the source described by `spec` at `version` and hashes it.
     ///
@@ -90,17 +99,20 @@ impl Fetcher<'_> {
             FetchSpec::Github {
                 repo,
                 rev,
+                tag,
                 submodules,
                 leave_dot_git,
             } => {
-                let rev = rev.render(version);
+                let rev = rev.as_ref().map(|t| t.render(version));
+                let tag = tag.as_ref().map(|t| t.render(version));
+                let git_ref = git_ref(rev.as_deref(), tag.as_deref());
                 let (hash, path, work, date) = if *submodules || *leave_dot_git {
                     let url = format!("https://github.com/{repo}.git");
-                    self.prefetch_git(&url, &rev, *submodules, *leave_dot_git, &[])
+                    self.prefetch_git(&url, &git_ref, *submodules, *leave_dot_git, &[])
                         .await?
                 } else {
                     self.download_tarball(&format!(
-                        "https://github.com/{repo}/archive/{rev}.tar.gz"
+                        "https://github.com/{repo}/archive/{git_ref}.tar.gz"
                     ))
                     .await?
                 };
@@ -108,6 +120,7 @@ impl Fetcher<'_> {
                     owner: repo.owner.clone(),
                     repo: repo.name.clone(),
                     rev,
+                    tag,
                     hash: hash.into(),
                     fetch_submodules: *submodules,
                     leave_dot_git: *leave_dot_git,
@@ -117,17 +130,21 @@ impl Fetcher<'_> {
             FetchSpec::Git {
                 url,
                 rev,
+                tag,
                 submodules,
                 leave_dot_git,
                 sparse_checkout,
             } => {
-                let rev = rev.render(version);
+                let rev = rev.as_ref().map(|t| t.render(version));
+                let tag = tag.as_ref().map(|t| t.render(version));
+                let git_ref = git_ref(rev.as_deref(), tag.as_deref());
                 let (hash, path, work, date) = self
-                    .prefetch_git(url, &rev, *submodules, *leave_dot_git, sparse_checkout)
+                    .prefetch_git(url, &git_ref, *submodules, *leave_dot_git, sparse_checkout)
                     .await?;
                 let source = LockedSource::Git {
                     url: url.clone(),
                     rev,
+                    tag,
                     hash: hash.into(),
                     fetch_submodules: *submodules,
                     leave_dot_git: *leave_dot_git,

@@ -32,6 +32,9 @@ pub enum ConfigError {
         )
     )]
     InvalidName(String),
+    #[error("package `{0}`: set exactly one of `rev` and `tag`")]
+    #[diagnostic(code(fetchrix::config::fetch))]
+    InvalidFetch(String),
     #[error("package `{package}`, derive `{derive}`: {message}")]
     #[diagnostic(code(fetchrix::config::invalid))]
     Invalid {
@@ -181,7 +184,11 @@ pub enum FetchSpec {
     },
     Github {
         repo: GitHubRepo,
-        rev: Template,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rev: Option<Template>,
+        /// Fetches `refs/tags/<tag>`; exclusive with `rev`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tag: Option<Template>,
         #[serde(default)]
         submodules: bool,
         #[serde(default)]
@@ -189,7 +196,11 @@ pub enum FetchSpec {
     },
     Git {
         url: String,
-        rev: Template,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rev: Option<Template>,
+        /// Fetches `refs/tags/<tag>`; exclusive with `rev`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tag: Option<Template>,
         #[serde(default)]
         submodules: bool,
         #[serde(default)]
@@ -369,6 +380,12 @@ impl Config {
             if !valid_name {
                 return Err(ConfigError::InvalidName(package.clone()));
             }
+            if let FetchSpec::Github { rev, tag, .. } | FetchSpec::Git { rev, tag, .. } =
+                &spec.fetch
+                && rev.is_some() == tag.is_some()
+            {
+                return Err(ConfigError::InvalidFetch(package.clone()));
+            }
             for (derive, d) in &spec.derive {
                 let message = match (d.strategy, &d.attr, d.kind) {
                     (Strategy::Fod, None, _) => Some("`strategy = \"fod\"` requires `attr`"),
@@ -420,7 +437,7 @@ mod tests {
 
             [packages.foo]
             version = { source = "github-release", repo = "owner/foo", strip_prefix = "v" }
-            fetch   = { type = "github", repo = "owner/foo", rev = "v{version}" }
+            fetch   = { type = "github", repo = "owner/foo", tag = "v{version}" }
 
             [packages.foo.derive.vendorHash]
             strategy = "fod"
@@ -440,11 +457,17 @@ mod tests {
                 filter: None,
             }
         );
-        let FetchSpec::Github { repo: r, rev, .. } = &foo.fetch else {
-            panic!("expected github fetch");
+        let FetchSpec::Github {
+            repo: r,
+            tag: Some(tag),
+            rev: None,
+            ..
+        } = &foo.fetch
+        else {
+            panic!("expected github fetch by tag");
         };
         assert_eq!(r, &repo);
-        assert_eq!(rev.render("1.2.3"), "v1.2.3");
+        assert_eq!(tag.render("1.2.3"), "v1.2.3");
     }
 
     #[test]
@@ -537,6 +560,21 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn requires_exactly_one_of_rev_and_tag() {
+        for refs in ["", r#", rev = "a", tag = "b""#] {
+            let err = parse(&format!(
+                r#"
+                [packages.foo]
+                version = {{ source = "manual", version = "1" }}
+                fetch = {{ type = "git", url = "https://example.org/foo.git"{refs} }}
+                "#
+            ))
+            .unwrap_err();
+            assert!(matches!(err, ConfigError::InvalidFetch(_)), "{err:?}");
+        }
     }
 
     #[test]

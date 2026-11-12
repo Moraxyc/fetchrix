@@ -90,7 +90,10 @@ pub enum LockedSource {
     Github {
         owner: String,
         repo: String,
-        rev: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rev: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
         hash: Hash,
         #[serde(default, skip_serializing_if = "is_false")]
         fetch_submodules: bool,
@@ -99,7 +102,10 @@ pub enum LockedSource {
     },
     Git {
         url: String,
-        rev: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rev: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
         hash: Hash,
         #[serde(default, skip_serializing_if = "is_false")]
         fetch_submodules: bool,
@@ -300,7 +306,7 @@ mod tests {
         "fetcher": "github",
         "owner": "owner",
         "repo": "foo",
-        "rev": "v1.2.3",
+        "tag": "v1.2.3",
         "hash": "{HASH}",
         "fetchSubmodules": true
       }},
