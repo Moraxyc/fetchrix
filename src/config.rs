@@ -98,6 +98,8 @@ pub enum VersionSpec {
     Git {
         url: String,
         branch: Option<String>,
+        /// Version the commit as `<stable>-unstable-<date>` instead of its SHA.
+        unstable: Option<Unstable>,
     },
     GitTag {
         url: String,
@@ -121,6 +123,13 @@ pub enum VersionSpec {
     Manual {
         version: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unstable {
+    /// Source of the `<stable>` part; `0` when absent.
+    pub stable: Option<Box<VersionSpec>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -428,6 +437,30 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn parses_unstable_git() {
+        let config = parse(
+            r#"
+            [packages.foo]
+            version = { source = "git", url = "https://example.org/foo.git", unstable = { stable = { source = "manual", version = "1.0" } } }
+            fetch = { type = "git", url = "https://example.org/foo.git", rev = "{version}" }
+            "#,
+        )
+        .unwrap();
+        let VersionSpec::Git {
+            unstable: Some(u), ..
+        } = &config.packages["foo"].version
+        else {
+            panic!("expected unstable git source");
+        };
+        assert_eq!(
+            u.stable.as_deref(),
+            Some(&VersionSpec::Manual {
+                version: "1.0".into()
+            })
+        );
     }
 
     #[test]

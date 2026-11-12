@@ -23,6 +23,12 @@ pub enum SourceError {
     #[error("{0}")]
     #[diagnostic(code(fetchrix::source::no_match))]
     NoMatch(String),
+    #[error("the fetched source has no commit date for an unstable version")]
+    #[diagnostic(
+        code(fetchrix::source::no_date),
+        help("use a fetcher that runs nix-prefetch-git, such as `type = \"git\"`")
+    )]
+    NoDate,
 }
 
 type Result<T, E = SourceError> = std::result::Result<T, E>;
@@ -38,6 +44,16 @@ pub async fn latest(client: &Client, spec: &VersionSpec) -> Result<String> {
         None => extract(spec, &[])?,
     };
     Ok(version)
+}
+
+/// Formats an unstable version as nixpkgs does: `<stable>-unstable-<date>`.
+///
+/// # Errors
+///
+/// Returns an error if `date` is unknown.
+pub fn unstable(stable: &str, date: Option<&str>) -> Result<String> {
+    let date = date.ok_or(SourceError::NoDate)?;
+    Ok(format!("{stable}-unstable-{date}"))
 }
 
 fn endpoint(spec: &VersionSpec) -> Option<String> {
@@ -284,14 +300,25 @@ mod tests {
             let spec = VersionSpec::Git {
                 url: "https://github.com/BurntSushi/ripgrep".into(),
                 branch,
+                unstable: None,
             };
             assert_eq!(extract(&spec, REFS).unwrap(), head);
         }
         let spec = VersionSpec::Git {
             url: String::new(),
             branch: Some("missing".into()),
+            unstable: None,
         };
         assert!(matches!(extract(&spec, REFS), Err(SourceError::NoMatch(_))));
+    }
+
+    #[test]
+    fn formats_unstable_version() {
+        assert_eq!(
+            unstable("0", Some("2024-01-15")).unwrap(),
+            "0-unstable-2024-01-15"
+        );
+        assert!(matches!(unstable("1.0", None), Err(SourceError::NoDate)));
     }
 
     #[test]

@@ -17,7 +17,7 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use auth::Credentials;
 use cli::{Cli, Command, Selection, Update};
-use config::{Config, Package};
+use config::{Config, Package, VersionSpec};
 use http::Client;
 use lock::{Derived, DerivedHash, DerivedLockfile, Lock, LockedPackage};
 use ui::{
@@ -306,8 +306,24 @@ async fn update_package(
     let package: &Package = &config.packages[name];
     progress.stage(Stage::Check);
     let raw = source::latest(client, &package.version).await?;
+    let stable = match &package.version {
+        VersionSpec::Git {
+            unstable: Some(unstable),
+            ..
+        } => Some(match &unstable.stable {
+            Some(spec) => source::latest(client, spec).await?,
+            None => "0".to_owned(),
+        }),
+        _ => None,
+    };
     let fingerprint = package.fingerprint();
-    if old.is_some_and(|old| old.raw_version() == raw && old.fingerprint == fingerprint) {
+    if old.is_some_and(|old| {
+        old.raw_version() == raw
+            && old.fingerprint == fingerprint
+            && stable
+                .as_ref()
+                .is_none_or(|s| old.version.starts_with(&format!("{s}-unstable-")))
+    }) {
         return Ok(Outcome::Unchanged);
     }
     let (new, files) = resolve(
@@ -317,7 +333,10 @@ async fn update_package(
         progress,
         name,
         raw.clone(),
-        |_| Ok(raw.clone()),
+        |date| match &stable {
+            Some(stable) => Ok(source::unstable(stable, date)?),
+            None => Ok(raw.clone()),
+        },
         fingerprint,
     )
     .await?;
