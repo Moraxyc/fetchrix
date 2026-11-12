@@ -16,8 +16,7 @@ let
   inherit (overlaid.mySources) foo baz web;
   # The fixture source stands in for the unfetchable `web.src`.
   webApp = buildNpmPackage {
-    pname = "web";
-    inherit (web) version;
+    inherit (web) pname version;
     src = ./npm-src;
     sourceRoot = "npm-src/frontend";
     npmDeps = importNpmLock (web.npmDeps // { npmRoot = ./npm-src/frontend; });
@@ -29,6 +28,8 @@ let
     '';
   };
 in
+assert foo.pname == "foo-bin";
+assert web.pname == "web";
 assert foo.version == "1.2.3";
 assert foo.rawVersion == "v1.2.3";
 assert !(web ? rawVersion);

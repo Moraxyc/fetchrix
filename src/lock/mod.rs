@@ -56,6 +56,8 @@ impl Default for Lock {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LockedPackage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pname: Option<String>,
     pub version: String,
     /// The upstream version before conversion; absent when equal to `version`.
     #[serde(

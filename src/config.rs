@@ -59,6 +59,8 @@ pub struct NixConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Package {
+    /// Nix `pname`; the package name when absent.
+    pub pname: Option<String>,
     pub version: VersionSpec,
     /// Rewrites applied in order to the upstream version, or to the stable
     /// part of an unstable one; the fetch still uses the upstream version.

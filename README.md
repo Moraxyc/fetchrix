@@ -17,12 +17,10 @@ overlays.default = lib.composeManyExtensions [
   (fetchrix.lib.overlay { dir = ./_sources; }) # attr defaults to "sources"
   (final: prev: {
     foo = final.rustPlatform.buildRustPackage {
-      pname = "foo";
-      inherit (final.sources.foo) version src cargoLock;
+      inherit (final.sources.foo) pname version src cargoLock;
     };
     bar = final.buildNpmPackage {
-      pname = "bar";
-      inherit (final.sources.bar) version src;
+      inherit (final.sources.bar) pname version src;
       npmDeps = final.importNpmLock final.sources.bar.npmDeps;
       npmConfigHook = final.importNpmLock.npmConfigHook;
     };
@@ -58,8 +56,7 @@ let
 in
 {
   foo = pkgs.rustPlatform.buildRustPackage {
-    pname = "foo";
-    inherit (sources.foo) version src cargoLock;
+    inherit (sources.foo) pname version src cargoLock;
   };
 }
 ```

@@ -320,6 +320,7 @@ async fn update_package(
     if old.is_some_and(|old| {
         old.raw_version() == raw
             && old.fingerprint == fingerprint
+            && old.pname == package.pname
             && match &stable {
                 Some(s) => old.version.starts_with(&format!("{s}-unstable-")),
                 None => old.version == package.transform(&raw),
@@ -402,6 +403,7 @@ async fn resolve(
     }
     Ok((
         LockedPackage {
+            pname: package.pname.clone(),
             raw_version: (raw != version).then_some(raw),
             version,
             date: source.date,

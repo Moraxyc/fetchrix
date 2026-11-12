@@ -99,6 +99,7 @@ mod tests {
 
     fn package(src: &str, vendor: &str, git: &str) -> LockedPackage {
         LockedPackage {
+            pname: None,
             version: "1.0.0".into(),
             raw_version: None,
             date: None,
