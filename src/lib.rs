@@ -373,6 +373,7 @@ async fn resolve(
     Ok((
         LockedPackage {
             version,
+            date: source.date,
             src: source.source,
             derived: outputs,
             fingerprint,
@@ -448,3 +449,4 @@ fn select(config: &Config, selection: &Selection) -> Result<Vec<String>> {
         })
         .collect()
 }
+

@@ -62,6 +62,9 @@ rec {
       in
       {
         inherit (pkg) version;
+      }
+      // lib.optionalAttrs (pkg ? date) { inherit (pkg) date; }
+      // {
         inherit src;
       }
       // lib.mapAttrs (_: derive name src) (pkg.derived or { })

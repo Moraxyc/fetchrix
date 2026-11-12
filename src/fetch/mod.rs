@@ -39,12 +39,16 @@ pub enum FetchError {
 
 type Result<T, E = FetchError> = std::result::Result<T, E>;
 
-/// A hash, the path it covers, and the temporary directory holding that path.
-type Local = (NixHash, PathBuf, Option<TempDir>);
+/// A hash, the path it covers, the temporary directory holding that path,
+/// and the commit date when available.
+type Local = (NixHash, PathBuf, Option<TempDir>, Option<String>);
 
 /// A fetched source; temporary copies are removed on drop.
 pub struct Fetched {
     pub source: LockedSource,
+    /// Commit date (`YYYY-MM-DD`), populated for sources fetched via
+    /// `nix-prefetch-git`.
+    pub date: Option<String>,
     /// The unpacked tree, or the file for `url` sources.
     pub path: PathBuf,
     _work: Option<TempDir>,
@@ -70,18 +74,18 @@ impl Fetcher<'_> {
     ///
     /// Returns an error if the download, unpacking, or prefetch fails.
     pub async fn fetch(&self, spec: &FetchSpec, version: &str) -> Result<Fetched> {
-        let (source, path, work) = match spec {
+        let (source, date, path, work) = match spec {
             FetchSpec::Url { url } => {
                 let url = url.render(version);
-                let (hash, path, work) = self.download_file(&url).await?;
+                let (hash, path, work, date) = self.download_file(&url).await?;
                 let hash = hash.into();
-                (LockedSource::Url { url, hash }, path, work)
+                (LockedSource::Url { url, hash }, date, path, work)
             }
             FetchSpec::Tarball { url } => {
                 let url = url.render(version);
-                let (hash, path, work) = self.download_tarball(&url).await?;
+                let (hash, path, work, date) = self.download_tarball(&url).await?;
                 let hash = hash.into();
-                (LockedSource::Tarball { url, hash }, path, work)
+                (LockedSource::Tarball { url, hash }, date, path, work)
             }
             FetchSpec::Github {
                 repo,
@@ -90,13 +94,15 @@ impl Fetcher<'_> {
                 leave_dot_git,
             } => {
                 let rev = rev.render(version);
-                let (hash, path, work) = if *submodules || *leave_dot_git {
+                let (hash, path, work, date) = if *submodules || *leave_dot_git {
                     let url = format!("https://github.com/{repo}.git");
                     self.prefetch_git(&url, &rev, *submodules, *leave_dot_git, &[])
                         .await?
                 } else {
-                    let url = format!("https://github.com/{repo}/archive/{rev}.tar.gz");
-                    self.download_tarball(&url).await?
+                    self.download_tarball(&format!(
+                        "https://github.com/{repo}/archive/{rev}.tar.gz"
+                    ))
+                    .await?
                 };
                 let source = LockedSource::Github {
                     owner: repo.owner.clone(),
@@ -106,7 +112,7 @@ impl Fetcher<'_> {
                     fetch_submodules: *submodules,
                     leave_dot_git: *leave_dot_git,
                 };
-                (source, path, work)
+                (source, date, path, work)
             }
             FetchSpec::Git {
                 url,
@@ -116,7 +122,7 @@ impl Fetcher<'_> {
                 sparse_checkout,
             } => {
                 let rev = rev.render(version);
-                let (hash, path, work) = self
+                let (hash, path, work, date) = self
                     .prefetch_git(url, &rev, *submodules, *leave_dot_git, sparse_checkout)
                     .await?;
                 let source = LockedSource::Git {
@@ -127,11 +133,12 @@ impl Fetcher<'_> {
                     leave_dot_git: *leave_dot_git,
                     sparse_checkout: sparse_checkout.clone(),
                 };
-                (source, path, work)
+                (source, date, path, work)
             }
         };
         Ok(Fetched {
             source,
+            date,
             path,
             _work: work,
         })
@@ -143,7 +150,7 @@ impl Fetcher<'_> {
     ///
     /// Returns an error if `nix-prefetch-git` fails.
     pub async fn fetchgit_hash(&self, url: &str, rev: &str) -> Result<NixHash> {
-        let (hash, _, _) = self.prefetch_git(url, rev, true, false, &[]).await?;
+        let (hash, _, _, _) = self.prefetch_git(url, rev, true, false, &[]).await?;
         Ok(hash)
     }
 
@@ -168,7 +175,7 @@ impl Fetcher<'_> {
         .await
         .expect("hashing does not panic")
         .map_err(io("cannot hash the download"))?;
-        Ok((hash, path, Some(work)))
+        Ok((hash, path, Some(work), None))
     }
 
     async fn download_tarball(&self, url: &str) -> Result<Local> {
@@ -181,7 +188,7 @@ impl Fetcher<'_> {
         })
         .await
         .expect("unpacking does not panic")?;
-        Ok((hash, root, Some(work)))
+        Ok((hash, root, Some(work), None))
     }
 
     async fn prefetch_git(
@@ -196,6 +203,7 @@ impl Fetcher<'_> {
         struct Output {
             hash: String,
             path: PathBuf,
+            date: Option<String>,
         }
         let mut command = tokio::process::Command::new("nix");
         command
@@ -229,7 +237,9 @@ impl Fetcher<'_> {
             .map_err(|e| FetchError::Prefetch(format!("unexpected output: {e}")))?;
         let hash = NixHash::from_sri(&parsed.hash)
             .map_err(|e| FetchError::Prefetch(format!("unexpected hash: {e}")))?;
-        Ok((hash, parsed.path, None))
+        // `date` from nix-prefetch-git is an ISO 8601 timestamp; take YYYY-MM-DD.
+        let date = parsed.date.and_then(|d| d.get(..10).map(str::to_owned));
+        Ok((hash, parsed.path, None, date))
     }
 }
 

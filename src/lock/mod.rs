@@ -57,6 +57,8 @@ impl Default for Lock {
 #[serde(deny_unknown_fields)]
 pub struct LockedPackage {
     pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
     pub src: LockedSource,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub derived: BTreeMap<String, Derived>,

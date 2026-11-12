@@ -42,4 +42,5 @@ assert web.npmDeps.package.name == "web";
 assert web.npmDeps.packageLock.lockfileVersion == 3;
 assert lib.hasInfix "baz.git" baz.src.url;
 assert !baz.src.fetchSubmodules;
+assert baz.date == "2024-01-15";
 runCommand "fetchrix-lib-test" { } "test -e ${webApp} && touch $out"
