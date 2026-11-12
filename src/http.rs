@@ -152,7 +152,7 @@ impl Client {
             request = request.header(header::ACCEPT, "application/vnd.github+json");
         }
         if let Some(credential) = self.credentials.get(&host) {
-            request = credential.apply(request);
+            request = credential.apply(request, &host);
         }
         request.send().await
     }

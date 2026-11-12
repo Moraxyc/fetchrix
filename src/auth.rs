@@ -20,9 +20,12 @@ pub enum Credential {
 }
 
 impl Credential {
-    pub(crate) fn apply(&self, request: RequestBuilder) -> RequestBuilder {
+    /// Git smart-HTTP endpoints reject bearer auth, so tokens for non-API
+    /// hosts go as basic auth, like git and Nix do.
+    pub(crate) fn apply(&self, request: RequestBuilder, host: &str) -> RequestBuilder {
         match self {
-            Self::Bearer(token) => request.bearer_auth(token),
+            Self::Bearer(token) if host.starts_with("api.") => request.bearer_auth(token),
+            Self::Bearer(token) => request.basic_auth("x-access-token", Some(token)),
             Self::Basic { login, password } => request.basic_auth(login, Some(password)),
         }
     }
@@ -189,6 +192,27 @@ mod tests {
             Some(Credential::Basic { .. })
         ));
         assert!(credentials.get("gitlab.com").is_none());
+    }
+
+    #[test]
+    fn bearer_token_uses_basic_auth_for_git_hosts() {
+        let credential = Credential::Bearer("t".to_owned());
+        let client = reqwest::Client::builder()
+            .tls_certs_only([])
+            .build()
+            .unwrap();
+        let auth = |host: &str| {
+            credential
+                .apply(client.get(format!("https://{host}/")), host)
+                .build()
+                .unwrap()
+                .headers()[reqwest::header::AUTHORIZATION]
+                .to_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(auth("api.github.com"), "Bearer t");
+        assert!(auth("github.com").starts_with("Basic "));
     }
 
     #[test]
