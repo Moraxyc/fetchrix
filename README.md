@@ -5,7 +5,12 @@ Update package sources and derived hashes for Nix.
 ## Usage
 
 `fetchrix update` writes `_sources/lock.json` and extracted lock files under
-`_sources/<package>/src/`. Expose them through an overlay:
+`_sources/<package>/src/`.
+
+### With flakes
+
+Add fetchrix as a flake input and use `fetchrix.lib.overlay` or
+`fetchrix.lib.load`:
 
 ```nix
 overlays.default = lib.composeManyExtensions [
@@ -25,11 +30,43 @@ overlays.default = lib.composeManyExtensions [
 ];
 ```
 
+### Without flakes
+
+**overlay.nix** — apply via `nixpkgs.overlays` or `pkgs.extend`:
+
+```nix
+# in your nixos configuration or pkgs instantiation
+nixpkgs.overlays = [
+  (import ./fetchrix/overlay.nix)          # adds pkgs.fetchrix
+  (import (fetchrixSrc + "/nix/lib.nix") { inherit (pkgs) lib; }).overlay
+    { dir = ./_sources; }                  # adds pkgs.sources
+];
+```
+
+**default.nix** — build fetchrix itself:
+
+```sh
+nix-build /path/to/fetchrix
+```
+
+**lib helper** — load sources without an overlay:
+
+```nix
+let
+  fetchrixLib = import ./fetchrix/nix/lib.nix { inherit (pkgs) lib; };
+  sources = fetchrixLib.load { inherit pkgs; dir = ./_sources; };
+in
+{
+  foo = pkgs.rustPlatform.buildRustPackage {
+    pname = "foo";
+    inherit (sources.foo) version src cargoLock;
+  };
+}
+```
+
 An `npm-deps` lock file yields `importNpmLock` arguments. Local and workspace
 dependencies resolve against the fetched `src`, so only `package.json` and
 `package-lock.json` are extracted.
-
-`fetchrix.lib.load { pkgs; dir; }` returns the same set without an overlay.
 
 ## Development
 
