@@ -2,7 +2,7 @@
 rec {
   /**
     Reads the fetchrix output directory `dir` into
-    `{ <name> = { pname; version; src; <derived>...; }; }`; `pname` defaults
+    `{ <name> = { pname; version; rawVersion; src; <derived>...; }; }`; `pname` defaults
     to `<name>`.
 
     A derived hash becomes its SRI string. An extracted `Cargo.lock` becomes
@@ -63,9 +63,8 @@ rec {
       in
       {
         pname = pkg.pname or name;
-        inherit (pkg) version;
+        inherit (pkg) version rawVersion;
       }
-      // lib.optionalAttrs (pkg ? rawVersion) { inherit (pkg) rawVersion; }
       // lib.optionalAttrs (pkg ? date) { inherit (pkg) date; }
       // {
         inherit src;

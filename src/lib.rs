@@ -122,7 +122,7 @@ async fn verify_package(
         flake_dir,
         progress,
         name,
-        locked.raw_version().to_owned(),
+        locked.raw_version.clone(),
         |_| Ok(locked.version.clone()),
         fingerprint,
     )
@@ -182,7 +182,7 @@ async fn check(
         .map(|(name, result)| {
             let status = match result {
                 Ok(new) => Status::changed(
-                    lock.packages.get(&name).map(LockedPackage::raw_version),
+                    lock.packages.get(&name).map(|p| p.raw_version.as_str()),
                     new,
                 ),
                 Err(e) => fail(&name, e.into()),
@@ -318,7 +318,7 @@ async fn update_package(
     };
     let fingerprint = package.fingerprint();
     if old.is_some_and(|old| {
-        old.raw_version() == raw
+        old.raw_version == raw
             && old.fingerprint == fingerprint
             && old.pname == package.pname
             && match &stable {
@@ -404,7 +404,7 @@ async fn resolve(
     Ok((
         LockedPackage {
             pname: package.pname.clone(),
-            raw_version: (raw != version).then_some(raw),
+            raw_version: raw,
             version,
             date: source.date,
             src: source.source,

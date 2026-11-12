@@ -101,7 +101,7 @@ mod tests {
         LockedPackage {
             pname: None,
             version: "1.0.0".into(),
-            raw_version: None,
+            raw_version: "1.0.0".into(),
             date: None,
             src: LockedSource::Url {
                 url: "https://example.org/foo.tar.gz".into(),

@@ -59,13 +59,9 @@ pub struct LockedPackage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pname: Option<String>,
     pub version: String,
-    /// The upstream version before conversion; absent when equal to `version`.
-    #[serde(
-        default,
-        rename = "rawVersion",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub raw_version: Option<String>,
+    /// The upstream version before conversion; fetch templates use it.
+    #[serde(rename = "rawVersion")]
+    pub raw_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
     pub src: LockedSource,
@@ -112,14 +108,6 @@ pub enum LockedSource {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         sparse_checkout: Vec<String>,
     },
-}
-
-impl LockedPackage {
-    /// The upstream version that fetch templates were rendered with.
-    #[must_use]
-    pub fn raw_version(&self) -> &str {
-        self.raw_version.as_deref().unwrap_or(&self.version)
-    }
 }
 
 impl LockedSource {
@@ -307,6 +295,7 @@ mod tests {
   "packages": {{
     "foo": {{
       "version": "1.2.3",
+      "rawVersion": "v1.2.3",
       "src": {{
         "fetcher": "github",
         "owner": "owner",

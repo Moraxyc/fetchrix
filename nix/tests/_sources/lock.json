@@ -23,6 +23,7 @@
     },
     "web": {
       "version": "0.1.0",
+      "rawVersion": "v0.1.0",
       "src": {
         "fetcher": "github",
         "owner": "owner",
@@ -39,6 +40,7 @@
     },
     "baz": {
       "version": "0123456789abcdef0123456789abcdef01234567",
+      "rawVersion": "0123456789abcdef0123456789abcdef01234567",
       "date": "2024-01-15",
       "src": {
         "fetcher": "git",
