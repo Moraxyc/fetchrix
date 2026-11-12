@@ -102,6 +102,12 @@ pub enum VersionSpec {
         #[serde(default)]
         date: bool,
     },
+    GitTag {
+        url: String,
+        strip_prefix: Option<String>,
+        /// Only consider tags that match this regex.
+        filter: Option<Pattern>,
+    },
     Pypi {
         name: String,
     },

@@ -109,6 +109,7 @@ fn endpoint(spec: &VersionSpec) -> Option<String> {
         }
         VersionSpec::GithubTag { repo, .. } => git::refs_url(&format!("https://github.com/{repo}")),
         VersionSpec::Git { url, .. } => git::refs_url(url),
+        VersionSpec::GitTag { url, .. } => git::refs_url(url),
         VersionSpec::Pypi { name } => format!("https://pypi.org/pypi/{name}/json"),
         VersionSpec::Crates { name } => format!("https://crates.io/api/v1/crates/{name}"),
         VersionSpec::Npm { name } => format!("https://registry.npmjs.org/{name}/latest"),
@@ -168,6 +169,25 @@ fn extract(spec: &VersionSpec, body: &[u8]) -> Result<String> {
                 .find(|r| r.name == target)
                 .map(|r| r.oid)
                 .ok_or_else(|| SourceError::NoMatch(format!("ref `{target}` not found")))
+        }
+        VersionSpec::GitTag {
+            strip_prefix, filter, ..
+        } => {
+            let refs = git::parse_refs(body)?;
+            let tags = refs
+                .iter()
+                .filter_map(|r| r.name.strip_prefix("refs/tags/"))
+                .filter(|t| !t.ends_with("^{}"))
+                .filter(|t| {
+                    filter
+                        .as_ref()
+                        .map_or(true, |pat| pat.as_regex().is_match(t))
+                })
+                .filter_map(|t| strip(t, strip_prefix.as_deref()))
+                .filter(|t| t.starts_with(|c: char| c.is_ascii_digit()));
+            version::max(tags)
+                .map(str::to_owned)
+                .ok_or_else(|| SourceError::NoMatch("no matching tag".into()))
         }
         VersionSpec::Pypi { .. } => {
             #[derive(Deserialize)]
@@ -301,6 +321,22 @@ mod tests {
             filter,
         };
         assert_eq!(extract(&spec, REFS).unwrap(), "15.2.0");
+    }
+
+    #[test]
+    fn git_tag_picks_highest() {
+        let spec = VersionSpec::GitTag {
+            url: "https://github.com/BurntSushi/ripgrep".into(),
+            strip_prefix: None,
+            filter: None,
+        };
+        assert_eq!(extract(&spec, REFS).unwrap(), "15.2.0");
+        let spec = VersionSpec::GitTag {
+            url: "https://github.com/BurntSushi/ripgrep".into(),
+            strip_prefix: Some("0.1.".into()),
+            filter: None,
+        };
+        assert_eq!(extract(&spec, REFS).unwrap(), "18");
     }
 
     #[test]
