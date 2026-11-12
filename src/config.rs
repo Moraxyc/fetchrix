@@ -86,10 +86,14 @@ pub enum VersionSpec {
     GithubRelease {
         repo: GitHubRepo,
         strip_prefix: Option<String>,
+        /// Only consider releases whose tag matches this regex.
+        filter: Option<Pattern>,
     },
     GithubTag {
         repo: GitHubRepo,
         strip_prefix: Option<String>,
+        /// Only consider tags that match this regex.
+        filter: Option<Pattern>,
     },
     Git {
         url: String,
@@ -379,7 +383,8 @@ mod tests {
             foo.version,
             VersionSpec::GithubRelease {
                 repo: repo.clone(),
-                strip_prefix: Some("v".into())
+                strip_prefix: Some("v".into()),
+                filter: None,
             }
         );
         let FetchSpec::Github { repo: r, rev, .. } = &foo.fetch else {

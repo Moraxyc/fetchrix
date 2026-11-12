@@ -56,24 +56,40 @@ fn endpoint(spec: &VersionSpec) -> Option<String> {
 
 fn extract(spec: &VersionSpec, body: &[u8]) -> Result<String> {
     match spec {
-        VersionSpec::GithubRelease { strip_prefix, .. } => {
+        VersionSpec::GithubRelease {
+            strip_prefix, filter, ..
+        } => {
             #[derive(Deserialize)]
             struct Release {
                 tag_name: String,
             }
             let tag = json::<Release>(body)?.tag_name;
+            if let Some(pat) = filter {
+                if !pat.as_regex().is_match(&tag) {
+                    return Err(SourceError::NoMatch(format!(
+                        "release tag `{tag}` does not match filter"
+                    )));
+                }
+            }
             strip(&tag, strip_prefix.as_deref())
                 .map(str::to_owned)
                 .ok_or_else(|| {
                     SourceError::NoMatch(format!("release tag `{tag}` lacks the prefix"))
                 })
         }
-        VersionSpec::GithubTag { strip_prefix, .. } => {
+        VersionSpec::GithubTag {
+            strip_prefix, filter, ..
+        } => {
             let refs = git::parse_refs(body)?;
             let tags = refs
                 .iter()
                 .filter_map(|r| r.name.strip_prefix("refs/tags/"))
                 .filter(|t| !t.ends_with("^{}"))
+                .filter(|t| {
+                    filter
+                        .as_ref()
+                        .map_or(true, |pat| pat.as_regex().is_match(t))
+                })
                 .filter_map(|t| strip(t, strip_prefix.as_deref()))
                 .filter(|t| t.starts_with(|c: char| c.is_ascii_digit()));
             version::max(tags)
@@ -165,6 +181,7 @@ mod tests {
                 VersionSpec::GithubRelease {
                     repo: repo(),
                     strip_prefix: None,
+                    filter: None,
                 },
                 &include_bytes!("fixtures/github-release.json")[..],
                 "15.2.0",
@@ -201,13 +218,38 @@ mod tests {
         let spec = VersionSpec::GithubTag {
             repo: repo(),
             strip_prefix: None,
+            filter: None,
         };
         assert_eq!(extract(&spec, REFS).unwrap(), "15.2.0");
         let spec = VersionSpec::GithubTag {
             repo: repo(),
             strip_prefix: Some("0.1.".into()),
+            filter: None,
         };
         assert_eq!(extract(&spec, REFS).unwrap(), "18");
+    }
+
+    #[test]
+    fn filter_excludes_non_matching_tags() {
+        let filter = Some(Pattern::try_from(r"^\d+\.\d+\.\d+$".to_owned()).unwrap());
+        let spec = VersionSpec::GithubTag {
+            repo: repo(),
+            strip_prefix: None,
+            filter,
+        };
+        assert_eq!(extract(&spec, REFS).unwrap(), "15.2.0");
+    }
+
+    #[test]
+    fn release_filter_rejects_non_matching() {
+        let filter = Some(Pattern::try_from(r"^v".to_owned()).unwrap());
+        let spec = VersionSpec::GithubRelease {
+            repo: repo(),
+            strip_prefix: None,
+            filter,
+        };
+        // The fixture tag is "15.2.0" (no leading v), so filter should reject it.
+        assert!(matches!(extract(&spec, include_bytes!("fixtures/github-release.json")), Err(SourceError::NoMatch(_))));
     }
 
     #[test]
@@ -245,6 +287,7 @@ mod tests {
             VersionSpec::GithubTag {
                 repo: repo(),
                 strip_prefix: None,
+                filter: None,
             },
             VersionSpec::Pypi {
                 name: "requests".into(),
