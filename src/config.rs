@@ -98,6 +98,9 @@ pub enum VersionSpec {
     Git {
         url: String,
         branch: Option<String>,
+        /// Format the version as `YYYY-MM-DD.git<short-sha>`.
+        #[serde(default)]
+        date: bool,
     },
     Pypi {
         name: String,

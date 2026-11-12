@@ -33,9 +33,72 @@ type Result<T, E = SourceError> = std::result::Result<T, E>;
 ///
 /// Returns an error if the request fails or no version is found.
 pub async fn latest(client: &Client, spec: &VersionSpec) -> Result<String> {
-    match endpoint(spec) {
-        Some(url) => extract(spec, &client.get(&url).await?),
-        None => extract(spec, &[]),
+    let version = match endpoint(spec) {
+        Some(url) => extract(spec, &client.get(&url).await?)?,
+        None => extract(spec, &[])?,
+    };
+    if let VersionSpec::Git { url, date: true, .. } = spec {
+        return commit_date(client, url, &version).await;
+    }
+    Ok(version)
+}
+
+/// Queries the commit date for `sha` in the repository at `url` and returns
+/// a version string of the form `YYYY-MM-DD.git<short-sha>`.
+async fn commit_date(client: &Client, url: &str, sha: &str) -> Result<String> {
+    let api_url = commit_api_url(url, sha).ok_or_else(|| {
+        SourceError::NoMatch(format!("cannot derive commit API URL from `{url}`"))
+    })?;
+    let body = client.get(&api_url).await?;
+    #[derive(Deserialize)]
+    struct CommitWrapper {
+        commit: CommitDetail,
+    }
+    #[derive(Deserialize)]
+    struct CommitDetail {
+        committer: Committer,
+    }
+    #[derive(Deserialize)]
+    struct Committer {
+        date: String,
+    }
+    let wrapper = json::<CommitWrapper>(&body)?;
+    let date = wrapper
+        .commit
+        .committer
+        .date
+        .get(..10)
+        .ok_or_else(|| SourceError::Decode("commit date too short".into()))?
+        .to_owned();
+    let short = sha.get(..7).unwrap_or(sha);
+    Ok(format!("{date}.git{short}"))
+}
+
+/// Derives a REST commit API URL from a Git clone URL.
+///
+/// Returns `None` if the URL cannot be parsed into a known host pattern.
+fn commit_api_url(url: &str, sha: &str) -> Option<String> {
+    let url = url.trim_end_matches('/').trim_end_matches(".git");
+    // Strip protocol prefix.
+    let path = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("git://"))?;
+    let (host, repo_path) = path.split_once('/')?;
+    let parts: Vec<&str> = repo_path.splitn(3, '/').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let (owner, repo) = (parts[0], parts[1]);
+    if host == "github.com" {
+        Some(format!(
+            "https://api.github.com/repos/{owner}/{repo}/commits/{sha}"
+        ))
+    } else {
+        // Gitea / Forgejo compatible API.
+        Some(format!(
+            "https://{host}/api/v1/repos/{owner}/{repo}/git/commits/{sha}"
+        ))
     }
 }
 
@@ -259,12 +322,14 @@ mod tests {
             let spec = VersionSpec::Git {
                 url: "https://github.com/BurntSushi/ripgrep".into(),
                 branch,
+                date: false,
             };
             assert_eq!(extract(&spec, REFS).unwrap(), head);
         }
         let spec = VersionSpec::Git {
             url: String::new(),
             branch: Some("missing".into()),
+            date: false,
         };
         assert!(matches!(extract(&spec, REFS), Err(SourceError::NoMatch(_))));
     }
@@ -277,6 +342,28 @@ mod tests {
         };
         let page = b"foo-1.9.tar foo-1.10.tar foo-1.2.tar";
         assert_eq!(extract(&spec, page).unwrap(), "1.10");
+    }
+
+    #[test]
+    fn commit_api_url_github() {
+        let sha = "abc1234";
+        assert_eq!(
+            super::commit_api_url("https://github.com/owner/repo", sha),
+            Some("https://api.github.com/repos/owner/repo/commits/abc1234".into())
+        );
+        assert_eq!(
+            super::commit_api_url("https://github.com/owner/repo.git", sha),
+            Some("https://api.github.com/repos/owner/repo/commits/abc1234".into())
+        );
+    }
+
+    #[test]
+    fn commit_api_url_gitea() {
+        let sha = "abc1234";
+        assert_eq!(
+            super::commit_api_url("https://codeberg.org/owner/repo", sha),
+            Some("https://codeberg.org/api/v1/repos/owner/repo/git/commits/abc1234".into())
+        );
     }
 
     #[tokio::test]
