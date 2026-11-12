@@ -46,8 +46,7 @@ fn endpoint(spec: &VersionSpec) -> Option<String> {
             format!("https://api.github.com/repos/{repo}/releases/latest")
         }
         VersionSpec::GithubTag { repo, .. } => git::refs_url(&format!("https://github.com/{repo}")),
-        VersionSpec::Git { url, .. } => git::refs_url(url),
-        VersionSpec::GitTag { url, .. } => git::refs_url(url),
+        VersionSpec::Git { url, .. } | VersionSpec::GitTag { url, .. } => git::refs_url(url),
         VersionSpec::Pypi { name } => format!("https://pypi.org/pypi/{name}/json"),
         VersionSpec::Crates { name } => format!("https://crates.io/api/v1/crates/{name}"),
         VersionSpec::Npm { name } => format!("https://registry.npmjs.org/{name}/latest"),
@@ -59,19 +58,21 @@ fn endpoint(spec: &VersionSpec) -> Option<String> {
 fn extract(spec: &VersionSpec, body: &[u8]) -> Result<String> {
     match spec {
         VersionSpec::GithubRelease {
-            strip_prefix, filter, ..
+            strip_prefix,
+            filter,
+            ..
         } => {
             #[derive(Deserialize)]
             struct Release {
                 tag_name: String,
             }
             let tag = json::<Release>(body)?.tag_name;
-            if let Some(pat) = filter {
-                if !pat.as_regex().is_match(&tag) {
-                    return Err(SourceError::NoMatch(format!(
-                        "release tag `{tag}` does not match filter"
-                    )));
-                }
+            if let Some(pat) = filter
+                && !pat.as_regex().is_match(&tag)
+            {
+                return Err(SourceError::NoMatch(format!(
+                    "release tag `{tag}` does not match filter"
+                )));
             }
             strip(&tag, strip_prefix.as_deref())
                 .map(str::to_owned)
@@ -80,18 +81,21 @@ fn extract(spec: &VersionSpec, body: &[u8]) -> Result<String> {
                 })
         }
         VersionSpec::GithubTag {
-            strip_prefix, filter, ..
+            strip_prefix,
+            filter,
+            ..
+        }
+        | VersionSpec::GitTag {
+            strip_prefix,
+            filter,
+            ..
         } => {
             let refs = git::parse_refs(body)?;
             let tags = refs
                 .iter()
                 .filter_map(|r| r.name.strip_prefix("refs/tags/"))
                 .filter(|t| !t.ends_with("^{}"))
-                .filter(|t| {
-                    filter
-                        .as_ref()
-                        .map_or(true, |pat| pat.as_regex().is_match(t))
-                })
+                .filter(|t| filter.as_ref().is_none_or(|pat| pat.as_regex().is_match(t)))
                 .filter_map(|t| strip(t, strip_prefix.as_deref()))
                 .filter(|t| t.starts_with(|c: char| c.is_ascii_digit()));
             version::max(tags)
@@ -107,25 +111,6 @@ fn extract(spec: &VersionSpec, body: &[u8]) -> Result<String> {
                 .find(|r| r.name == target)
                 .map(|r| r.oid)
                 .ok_or_else(|| SourceError::NoMatch(format!("ref `{target}` not found")))
-        }
-        VersionSpec::GitTag {
-            strip_prefix, filter, ..
-        } => {
-            let refs = git::parse_refs(body)?;
-            let tags = refs
-                .iter()
-                .filter_map(|r| r.name.strip_prefix("refs/tags/"))
-                .filter(|t| !t.ends_with("^{}"))
-                .filter(|t| {
-                    filter
-                        .as_ref()
-                        .map_or(true, |pat| pat.as_regex().is_match(t))
-                })
-                .filter_map(|t| strip(t, strip_prefix.as_deref()))
-                .filter(|t| t.starts_with(|c: char| c.is_ascii_digit()));
-            version::max(tags)
-                .map(str::to_owned)
-                .ok_or_else(|| SourceError::NoMatch("no matching tag".into()))
         }
         VersionSpec::Pypi { .. } => {
             #[derive(Deserialize)]
@@ -286,7 +271,10 @@ mod tests {
             filter,
         };
         // The fixture tag is "15.2.0" (no leading v), so filter should reject it.
-        assert!(matches!(extract(&spec, include_bytes!("fixtures/github-release.json")), Err(SourceError::NoMatch(_))));
+        assert!(matches!(
+            extract(&spec, include_bytes!("fixtures/github-release.json")),
+            Err(SourceError::NoMatch(_))
+        ));
     }
 
     #[test]
