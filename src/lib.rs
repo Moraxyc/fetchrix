@@ -311,7 +311,7 @@ async fn update_package(
             unstable: Some(unstable),
             ..
         } => Some(match &unstable.stable {
-            Some(spec) => source::latest(client, spec).await?,
+            Some(spec) => package.transform(&source::latest(client, spec).await?),
             None => "0".to_owned(),
         }),
         _ => None,
@@ -320,9 +320,10 @@ async fn update_package(
     if old.is_some_and(|old| {
         old.raw_version() == raw
             && old.fingerprint == fingerprint
-            && stable
-                .as_ref()
-                .is_none_or(|s| old.version.starts_with(&format!("{s}-unstable-")))
+            && match &stable {
+                Some(s) => old.version.starts_with(&format!("{s}-unstable-")),
+                None => old.version == package.transform(&raw),
+            }
     }) {
         return Ok(Outcome::Unchanged);
     }
@@ -335,7 +336,7 @@ async fn update_package(
         raw.clone(),
         |date| match &stable {
             Some(stable) => Ok(source::unstable(stable, date)?),
-            None => Ok(raw.clone()),
+            None => Ok(package.transform(&raw)),
         },
         fingerprint,
     )

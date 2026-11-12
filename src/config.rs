@@ -60,6 +60,10 @@ pub struct NixConfig {
 #[serde(deny_unknown_fields)]
 pub struct Package {
     pub version: VersionSpec,
+    /// Rewrites applied in order to the upstream version, or to the stable
+    /// part of an unstable one; the fetch still uses the upstream version.
+    #[serde(default)]
+    pub transform: Vec<Transform>,
     pub fetch: FetchSpec,
     #[serde(default)]
     pub derive: BTreeMap<String, DeriveSpec>,
@@ -123,6 +127,38 @@ pub enum VersionSpec {
     Manual {
         version: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Transform {
+    /// Removes a leading `v` or `V`.
+    StripV,
+    StripPrefix(String),
+    StripSuffix(String),
+}
+
+impl Transform {
+    #[must_use]
+    pub fn apply<'a>(&self, version: &'a str) -> &'a str {
+        match self {
+            Self::StripV => version.strip_prefix(['v', 'V']),
+            Self::StripPrefix(p) => version.strip_prefix(p.as_str()),
+            Self::StripSuffix(s) => version.strip_suffix(s.as_str()),
+        }
+        .unwrap_or(version)
+    }
+}
+
+impl Package {
+    /// Applies every `transform` to `version`.
+    #[must_use]
+    pub fn transform(&self, version: &str) -> String {
+        self.transform
+            .iter()
+            .fold(version, |v, t| t.apply(v))
+            .to_owned()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -461,6 +497,22 @@ mod tests {
                 version: "1.0".into()
             })
         );
+    }
+
+    #[test]
+    fn applies_transforms_in_order() {
+        let config = parse(
+            r#"
+            [packages.foo]
+            version = { source = "manual", version = "Vrelease-1.0-final" }
+            transform = ["strip-v", { strip-prefix = "release-" }, { strip-suffix = "-final" }, "strip-v"]
+            fetch = { type = "url", url = "https://example.org/{version}" }
+            "#,
+        )
+        .unwrap();
+        let foo = &config.packages["foo"];
+        assert_eq!(foo.transform("Vrelease-1.0-final"), "1.0");
+        assert_eq!(foo.transform("2.0"), "2.0");
     }
 
     #[test]
