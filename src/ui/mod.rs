@@ -1,8 +1,55 @@
 //! Progress and report output.
 
+pub mod github;
+pub mod report;
+
 use std::{fmt, io::IsTerminal, time::Duration};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use miette::Diagnostic;
+use thiserror::Error;
+
+use report::Report;
+
+#[derive(Debug, Error, Diagnostic)]
+pub enum UiError {
+    #[error("cannot write {path}")]
+    #[diagnostic(code(fetchrix::ui::io))]
+    Io {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Prints the report on stdout as text or JSON, and publishes it to GitHub
+/// Actions when running there.
+///
+/// # Errors
+///
+/// Returns an error if the GitHub step summary cannot be written.
+///
+/// # Panics
+///
+/// Never; reports contain only strings.
+pub fn print(report: &Report, json: bool) -> Result<(), UiError> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).expect("reports contain only strings")
+        );
+    } else {
+        for entry in &report.packages {
+            if !matches!(entry.status, report::Status::Failed { .. }) {
+                println!("{entry}");
+            }
+        }
+    }
+    if github::detected() {
+        github::publish(report)?;
+    }
+    Ok(())
+}
 
 /// Pipeline stage of one package.
 #[derive(Debug, Clone, Copy)]
@@ -26,6 +73,7 @@ impl fmt::Display for Stage {
 /// terminal, one line per stage change otherwise.
 pub struct Ui {
     live: Option<Live>,
+    group: bool,
 }
 
 struct Live {
@@ -39,7 +87,7 @@ impl Ui {
     ///
     /// Never; the progress templates are constant and valid.
     #[must_use]
-    pub fn new(names: &[String]) -> Self {
+    pub fn new(command: &str, names: &[String]) -> Self {
         let live = std::io::stderr().is_terminal().then(|| {
             let multi = MultiProgress::new();
             let total = multi.add(ProgressBar::new(names.len() as u64));
@@ -54,7 +102,11 @@ impl Ui {
                 width: names.iter().map(String::len).max().unwrap_or(0),
             }
         });
-        Self { live }
+        let group = live.is_none() && github::detected();
+        if group {
+            eprintln!("::group::fetchrix {command}");
+        }
+        Self { live, group }
     }
 
     /// # Panics
@@ -90,6 +142,9 @@ impl Ui {
             live.total.finish();
             // The display is cosmetic; a failed clear must not fail the run.
             let _ = live.multi.clear();
+        }
+        if self.group {
+            eprintln!("::endgroup::");
         }
     }
 }

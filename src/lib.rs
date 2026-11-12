@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod cli;
+pub mod commit;
 pub mod config;
 pub mod derive;
 pub mod error;
@@ -15,11 +16,14 @@ pub use error::{Error, Result};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use auth::Credentials;
-use cli::{Cli, Command, Selection};
+use cli::{Cli, Command, Selection, Update};
 use config::{Config, Package};
 use http::Client;
 use lock::{Derived, DerivedHash, DerivedLockfile, Lock, LockedPackage};
-use ui::{Progress, Stage, Ui};
+use ui::{
+    Progress, Stage, Ui,
+    report::{Entry, Report, Status},
+};
 use verify::VerifyError;
 
 /// Runs the command selected on the command line.
@@ -33,24 +37,30 @@ pub async fn run(cli: &Cli) -> Result<()> {
     match &cli.command {
         Command::Check(selection) => {
             let selected = select(&config, selection)?;
-            check(cli, &config, &lock, &selected).await
+            check(cli, selection.json, &config, &lock, &selected).await
         }
-        Command::Update(selection) => {
-            let selected = select(&config, selection)?;
-            update(cli, config, lock, selected, selection.packages.is_empty()).await
+        Command::Update(args) => {
+            let selected = select(&config, &args.selection)?;
+            update(cli, args, config, lock, selected).await
         }
         Command::Verify(selection) => {
             let selected = select(&config, selection)?;
-            verify(cli, config, &lock, selected).await
+            verify(cli, selection.json, config, &lock, selected).await
         }
     }
 }
 
-async fn verify(cli: &Cli, config: Arc<Config>, lock: &Lock, selected: Vec<String>) -> Result<()> {
+async fn verify(
+    cli: &Cli,
+    json: bool,
+    config: Arc<Config>,
+    lock: &Lock,
+    selected: Vec<String>,
+) -> Result<()> {
     let client = Arc::new(Client::new(Credentials::load(&cli.access_token)?)?);
     let flake_dir = Arc::new(fetch::flake_dir(&cli.config));
     let out_dir = Arc::new(cli.out_dir.clone());
-    let ui = Ui::new(&selected);
+    let ui = Ui::new("verify", &selected);
     let mut tasks = tokio::task::JoinSet::new();
     for name in selected {
         let client = Arc::clone(&client);
@@ -71,14 +81,23 @@ async fn verify(cli: &Cli, config: Arc<Config>, lock: &Lock, selected: Vec<Strin
     let results = join(tasks).await;
     ui.finish();
 
-    let mut failed = 0;
-    for (name, result) in results {
-        match result {
-            Ok(version) => println!("{name}: {version} ok"),
-            Err(e) => failed += fail(&name, e),
-        }
-    }
-    finish(failed)
+    let packages = results
+        .into_iter()
+        .map(|(name, result)| {
+            let status = match result {
+                Ok(version) => Status::Verified { version },
+                Err(e) => fail(&name, e),
+            };
+            Entry { name, status }
+        })
+        .collect();
+    finish(
+        &Report {
+            command: "verify",
+            packages,
+        },
+        json,
+    )
 }
 
 /// Recomputes the hashes of the locked version and compares them, and the
@@ -132,9 +151,15 @@ async fn verify_package(
     }
 }
 
-async fn check(cli: &Cli, config: &Config, lock: &Lock, selected: &[String]) -> Result<()> {
+async fn check(
+    cli: &Cli,
+    json: bool,
+    config: &Config,
+    lock: &Lock,
+    selected: &[String],
+) -> Result<()> {
     let client = Arc::new(Client::new(Credentials::load(&cli.access_token)?)?);
-    let ui = Ui::new(selected);
+    let ui = Ui::new("check", selected);
     let mut tasks = tokio::task::JoinSet::new();
     for name in selected {
         let client = Arc::clone(&client);
@@ -151,18 +176,25 @@ async fn check(cli: &Cli, config: &Config, lock: &Lock, selected: &[String]) -> 
     let results = join(tasks).await;
     ui.finish();
 
-    let mut failed = 0;
-    for (name, result) in results {
-        match result {
-            Ok(new) => report(
-                &name,
-                lock.packages.get(&name).map(|p| p.version.as_str()),
-                &new,
-            ),
-            Err(e) => failed += fail(&name, e.into()),
-        }
-    }
-    finish(failed)
+    let packages = results
+        .into_iter()
+        .map(|(name, result)| {
+            let status = match result {
+                Ok(new) => {
+                    Status::changed(lock.packages.get(&name).map(|p| p.version.as_str()), new)
+                }
+                Err(e) => fail(&name, e.into()),
+            };
+            Entry { name, status }
+        })
+        .collect();
+    finish(
+        &Report {
+            command: "check",
+            packages,
+        },
+        json,
+    )
 }
 
 enum Outcome {
@@ -175,14 +207,14 @@ type Lockfiles = Vec<(String, Vec<u8>)>;
 
 async fn update(
     cli: &Cli,
+    args: &Update,
     config: Arc<Config>,
     mut lock: Lock,
     selected: Vec<String>,
-    all: bool,
 ) -> Result<()> {
     let client = Arc::new(Client::new(Credentials::load(&cli.access_token)?)?);
     let flake_dir = Arc::new(fetch::flake_dir(&cli.config));
-    let ui = Ui::new(&selected);
+    let ui = Ui::new("update", &selected);
     let mut tasks = tokio::task::JoinSet::new();
     for name in selected {
         let client = Arc::clone(&client);
@@ -200,24 +232,26 @@ async fn update(
     ui.finish();
 
     let original = lock.clone();
-    let mut failed = 0;
+    let mut packages = Vec::new();
     let mut lockfiles = BTreeMap::new();
     for (name, result) in results {
-        match result {
-            Ok(Outcome::Unchanged) => println!("{name}: {}", lock.packages[&name].version),
+        let status = match result {
+            Ok(Outcome::Unchanged) => Status::Unchanged {
+                version: lock.packages[&name].version.clone(),
+            },
             Ok(Outcome::Updated(new, files)) => {
-                report(
-                    &name,
-                    lock.packages.get(&name).map(|p| p.version.as_str()),
-                    &new.version,
-                );
                 lockfiles.insert(name.clone(), files);
-                lock.packages.insert(name, *new);
+                let old = lock.packages.insert(name.clone(), *new);
+                Status::Changed {
+                    old: old.map(|p| p.version),
+                    new: lock.packages[&name].version.clone(),
+                }
             }
-            Err(e) => failed += fail(&name, e),
-        }
+            Err(e) => fail(&name, e),
+        };
+        packages.push(Entry { name, status });
     }
-    if all {
+    if args.selection.packages.is_empty() {
         let removed: Vec<_> = lock
             .packages
             .keys()
@@ -225,9 +259,17 @@ async fn update(
             .cloned()
             .collect();
         for name in removed {
-            lock.packages.remove(&name);
-            lockfiles.insert(name, Vec::new());
+            let old = lock
+                .packages
+                .remove(&name)
+                .expect("removed names are locked");
+            lockfiles.insert(name.clone(), Vec::new());
+            packages.push(Entry {
+                name,
+                status: Status::Removed { old: old.version },
+            });
         }
+        packages.sort_by(|a, b| a.name.cmp(&b.name));
     }
     for (name, files) in lockfiles {
         write_lockfiles(&cli.out_dir.join(name), &files)?;
@@ -239,7 +281,16 @@ async fn update(
         })?;
         lock.save(&cli.lock_path())?;
     }
-    finish(failed)
+    let report = Report {
+        command: "update",
+        packages,
+    };
+    if args.commit
+        && let Some(message) = report.commit_message()
+    {
+        commit::commit(&cli.out_dir, &message).await?;
+    }
+    finish(&report, args.selection.json)
 }
 
 async fn update_package(
@@ -359,20 +410,21 @@ async fn join<T: 'static>(mut tasks: tokio::task::JoinSet<(String, T)>) -> BTree
     results
 }
 
-fn report(name: &str, old: Option<&str>, new: &str) {
-    match old {
-        Some(old) if old == new => println!("{name}: {new}"),
-        Some(old) => println!("{name}: {old} -> {new}"),
-        None => println!("{name}: {new} (new)"),
+/// Renders the diagnostic on stderr and records its message chain.
+fn fail(name: &str, error: Error) -> Status {
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(&error);
+    while let Some(e) = source {
+        message = format!("{message}: {e}");
+        source = e.source();
     }
-}
-
-fn fail(name: &str, error: Error) -> usize {
     eprintln!("{:?}", miette::Report::new(error).wrap_err(name.to_owned()));
-    1
+    Status::Failed { error: message }
 }
 
-fn finish(failed: usize) -> Result<()> {
+fn finish(report: &Report, json: bool) -> Result<()> {
+    ui::print(report, json)?;
+    let failed = report.failures();
     if failed == 0 {
         Ok(())
     } else {

@@ -2,8 +2,9 @@ use miette::Diagnostic;
 use thiserror::Error;
 
 use crate::{
-    auth::AuthError, config::ConfigError, derive::DeriveError, fetch::FetchError, http::HttpError,
-    lock::LockError, source::SourceError, verify::VerifyError,
+    auth::AuthError, commit::CommitError, config::ConfigError, derive::DeriveError,
+    fetch::FetchError, http::HttpError, lock::LockError, source::SourceError, ui::UiError,
+    verify::VerifyError,
 };
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -34,6 +35,12 @@ pub enum Error {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Verify(#[from] VerifyError),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Commit(#[from] CommitError),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Ui(#[from] UiError),
     #[error("{0} package(s) failed")]
     #[diagnostic(code(fetchrix::failed))]
     Failed(usize),

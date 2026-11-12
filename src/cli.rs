@@ -30,7 +30,7 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Check versions, fetch sources, compute derived hashes, and write the lock file.
-    Update(Selection),
+    Update(Update),
     /// Check upstream versions without downloading or writing the lock file.
     Check(Selection),
     /// Verify hashes recorded in the lock file.
@@ -38,9 +38,21 @@ pub enum Command {
 }
 
 #[derive(Debug, Args)]
+pub struct Update {
+    #[command(flatten)]
+    pub selection: Selection,
+    /// Commit the output directory once, listing every version change in the message.
+    #[arg(long)]
+    pub commit: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct Selection {
     /// Packages to process; all packages when empty.
     pub packages: Vec<String>,
+    /// Print the report as JSON on stdout.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[cfg(test)]
