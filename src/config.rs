@@ -246,6 +246,24 @@ pub enum Step {
         #[serde(default)]
         args: Vec<String>,
     },
+    /// Downloads Go module dependencies and writes `go.sum`.
+    GoModDownload {
+        sub_dir: Option<String>,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    /// Generates `pnpm-lock.yaml` without installing.
+    PnpmLock {
+        sub_dir: Option<String>,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    /// Generates `Cargo.lock` without building.
+    CargoGenerateLock {
+        sub_dir: Option<String>,
+        #[serde(default)]
+        args: Vec<String>,
+    },
     /// Runs a local program; `run[0]` is a path relative to the configuration
     /// file.
     Hook {
@@ -260,6 +278,9 @@ impl Step {
         match self {
             Self::NpmLock { sub_dir, .. }
             | Self::ComposerLock { sub_dir, .. }
+            | Self::GoModDownload { sub_dir, .. }
+            | Self::PnpmLock { sub_dir, .. }
+            | Self::CargoGenerateLock { sub_dir, .. }
             | Self::Hook { sub_dir, .. } => sub_dir.as_deref(),
         }
     }
@@ -293,6 +314,8 @@ pub struct DeriveSpec {
 pub enum DeriveKind {
     NpmDeps,
     CargoVendor,
+    GoModules,
+    PnpmDeps,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

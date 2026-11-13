@@ -176,6 +176,28 @@ impl Preparer<'_> {
                     .args(args);
                 command
             }
+            Step::GoModDownload { args, .. } => {
+                let mut command = nix_tool("go", "go");
+                command.args(["mod", "download"]).args(args);
+                command
+            }
+            Step::PnpmLock { args, .. } => {
+                let mut command = nix_tool("nodePackages.pnpm", "pnpm");
+                command
+                    .args([
+                        "install",
+                        "--lockfile-only",
+                        "--ignore-scripts",
+                        "--no-frozen-lockfile",
+                    ])
+                    .args(args);
+                command
+            }
+            Step::CargoGenerateLock { args, .. } => {
+                let mut command = nix_tool("cargo", "cargo");
+                command.args(["generate-lockfile"]).args(args);
+                command
+            }
             Step::Hook { run, .. } => {
                 let (program, args) = run.split_first().expect("validation requires a program");
                 let mut command = Command::new(self.config_dir.join(program));
@@ -190,6 +212,9 @@ fn describe(step: &Step) -> String {
     match step {
         Step::NpmLock { .. } => "npm-lock".into(),
         Step::ComposerLock { .. } => "composer-lock".into(),
+        Step::GoModDownload { .. } => "go-mod-download".into(),
+        Step::PnpmLock { .. } => "pnpm-lock".into(),
+        Step::CargoGenerateLock { .. } => "cargo-generate-lock".into(),
         Step::Hook { run, .. } => format!("hook `{}`", run.join(" ")),
     }
 }

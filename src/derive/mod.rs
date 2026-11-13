@@ -28,15 +28,21 @@ pub enum DeriveError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Fetch(#[from] FetchError),
-    #[error("invalid Cargo.lock: {0}")]
-    #[diagnostic(code(fetchrix::derive::cargo_lock))]
-    CargoLock(String),
     #[error("invalid package-lock.json: {0}")]
     #[diagnostic(
         code(fetchrix::derive::npm_lock),
         help("`importNpmLock` needs `lockfileVersion` 2 or later")
     )]
     NpmLock(String),
+    #[error("invalid pnpm-lock.yaml: {0}")]
+    #[diagnostic(code(fetchrix::derive::pnpm_lock))]
+    PnpmLock(String),
+    #[error("invalid go.sum: {0}")]
+    #[diagnostic(code(fetchrix::derive::go_sum))]
+    GoSum(String),
+    #[error("invalid Cargo.lock: {0}")]
+    #[diagnostic(code(fetchrix::derive::cargo_lock))]
+    CargoLock(String),
     #[error("{0} is not supported yet")]
     #[diagnostic(code(fetchrix::derive::unsupported))]
     Unsupported(&'static str),
@@ -156,6 +162,16 @@ impl Deriver<'_> {
                 check_npm_lock(&lock.1)?;
                 vec![lock, read("package.json").await?]
             }
+            Some(DeriveKind::PnpmDeps) => {
+                let lock = read("pnpm-lock.yaml").await?;
+                check_pnpm_lock(&lock.1)?;
+                vec![lock, read("package.json").await?]
+            }
+            Some(DeriveKind::GoModules) => {
+                let go_sum = read("go.sum").await?;
+                check_go_sum(&go_sum.1)?;
+                vec![go_sum, read("go.mod").await?]
+            }
             None => return Err(DeriveError::Unsupported("`lockfile` without `kind`")),
         };
         Ok(Output::Lockfile {
@@ -237,6 +253,24 @@ fn check_npm_lock(content: &[u8]) -> Result<()> {
             lock.lockfile_version
         )));
     }
+    Ok(())
+}
+
+/// Rejects pnpm lock files missing the `lockfileVersion` key.
+fn check_pnpm_lock(content: &[u8]) -> Result<()> {
+    let text =
+        std::str::from_utf8(content).map_err(|e| DeriveError::PnpmLock(e.to_string()))?;
+    if !text.lines().any(|l| l.starts_with("lockfileVersion:")) {
+        return Err(DeriveError::PnpmLock(
+            "missing `lockfileVersion` key".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Rejects go.sum files that are not valid UTF-8.
+fn check_go_sum(content: &[u8]) -> Result<()> {
+    std::str::from_utf8(content).map_err(|e| DeriveError::GoSum(e.to_string()))?;
     Ok(())
 }
 
