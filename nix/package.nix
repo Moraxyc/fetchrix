@@ -2,6 +2,7 @@
   lib,
   rustPlatform,
   aws-lc,
+  gitMinimal,
   pkg-config,
 }:
 let
@@ -23,6 +24,7 @@ rustPlatform.buildRustPackage {
 
   nativeBuildInputs = [ pkg-config ];
   buildInputs = [ aws-lc ];
+  nativeCheckInputs = [ gitMinimal ];
 
   cargoLock = {
     lockFile = ../Cargo.lock;

@@ -32,6 +32,9 @@ pub fn compare(locked: &LockedPackage, actual: &LockedPackage) -> Vec<String> {
             actual.src.hash()
         ));
     }
+    if locked.artifacts != actual.artifacts {
+        diffs.push("artifacts: the declared artifacts changed".to_owned());
+    }
     let attrs: BTreeSet<_> = locked.derived.keys().chain(actual.derived.keys()).collect();
     for attr in attrs {
         match (locked.derived.get(attr), actual.derived.get(attr)) {
@@ -120,6 +123,7 @@ mod tests {
                     }),
                 ),
             ]),
+            artifacts: BTreeMap::new(),
             fingerprint: "f".into(),
         }
     }

@@ -67,6 +67,10 @@ pub struct LockedPackage {
     pub src: LockedSource,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub derived: BTreeMap<String, Derived>,
+    /// Files exported by `prepare`, by name, as paths relative to the
+    /// directory of the lock file.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub artifacts: BTreeMap<String, String>,
     pub fingerprint: String,
 }
 

@@ -65,6 +65,30 @@ An `npm-deps` lock file yields `importNpmLock` arguments. Local and workspace
 dependencies resolve against the fetched `src`, so only `package.json` and
 `package-lock.json` are extracted.
 
+### Preparing the source
+
+`prepare` runs steps in a writable copy of the fetched source. Derived outputs
+are computed from that copy, and declared artifacts are written to
+`_sources/<package>/<name>` and exposed as `sources.<package>.artifacts.<name>`.
+
+```toml
+[packages.shlink.prepare]
+steps = [{ type = "composer-lock" }]
+artifacts."composer.lock" = { type = "file", path = "composer.lock" }
+
+[packages.foo.prepare]
+steps = [
+  { type = "npm-lock", args = ["--legacy-peer-deps"] },
+  { type = "hook", run = ["./scripts/patch-foo.sh"] },
+]
+artifacts."fix.patch" = { type = "patch", paths = ["package.json", "package-lock.json"] }
+```
+
+`npm-lock` and `composer-lock` take tools from `[nix].nixpkgs`. A `hook`
+runs a program given by a path relative to the configuration file, with
+`FETCHRIX_SOURCE` and `FETCHRIX_VERSION` set. A `patch` artifact holds
+the changes made by the steps, applicable with `patches`.
+
 ## Development
 
 ```sh

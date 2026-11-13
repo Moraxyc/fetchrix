@@ -129,7 +129,7 @@ async fn verify_package(
     .await?;
     let mut diffs = verify::compare(&locked, &actual);
     for (file, content) in files {
-        let path = out_dir.join(name).join(lock::SRC_DIR).join(&file);
+        let path = out_dir.join(name).join(&file);
         match tokio::fs::read(&path).await {
             Ok(on_disk) if on_disk == content => {}
             Ok(_) => diffs.push(format!("{}: differs from the source", path.display())),
@@ -204,7 +204,7 @@ enum Outcome {
     Updated(Box<LockedPackage>, Lockfiles),
 }
 
-/// Extracted lock files of one package, by path relative to the source root.
+/// Files written for one package, by path relative to `<out>/<package>`.
 type Lockfiles = Vec<(String, Vec<u8>)>;
 
 async fn update(
@@ -370,18 +370,37 @@ async fn resolve(
     progress.stage(Stage::Fetch);
     let source = fetcher.fetch(&package.fetch, &raw).await?;
     let version = version(source.date.as_deref())?;
-    if !package.derive.is_empty() {
+    if !package.derive.is_empty() || package.prepare.is_some() {
         progress.stage(Stage::Derive);
     }
+
+    let mut files = Vec::new();
+    let mut artifacts = BTreeMap::new();
+    let prepared = match &package.prepare {
+        Some(prepare) => {
+            let preparer = derive::prepare::Preparer {
+                nixpkgs: fetcher.nixpkgs,
+                config_dir: flake_dir,
+                version: &version,
+            };
+            let copy = preparer.prepare(prepare, &source.path).await?;
+            for (artifact, content) in &copy.artifacts {
+                artifacts.insert(artifact.clone(), format!("{name}/{artifact}"));
+                files.push((artifact.clone(), content.clone()));
+            }
+            Some(copy)
+        }
+        None => None,
+    };
+    let tree = prepared.as_ref().map_or(&source.path, |p| &p.path);
 
     let deriver = derive::Deriver {
         fetcher: &fetcher,
         flake_dir,
     };
     let mut outputs = BTreeMap::new();
-    let mut files = Vec::new();
     for (attr, spec) in &package.derive {
-        let entry = match deriver.derive(spec, &source.path).await? {
+        let entry = match deriver.derive(spec, tree).await? {
             derive::Output::Hash(hash) => Derived::Hash(DerivedHash { hash: hash.into() }),
             derive::Output::Lockfile {
                 files: extracted,
@@ -389,7 +408,11 @@ async fn resolve(
             } => {
                 let (first, _) = extracted.first().expect("the lock file comes first");
                 let lockfile = format!("{name}/{}/{first}", lock::SRC_DIR);
-                files.extend(extracted);
+                files.extend(
+                    extracted
+                        .into_iter()
+                        .map(|(path, content)| (format!("{}/{path}", lock::SRC_DIR), content)),
+                );
                 Derived::Lockfile(DerivedLockfile {
                     lockfile,
                     output_hashes: output_hashes
@@ -409,6 +432,7 @@ async fn resolve(
             date: source.date,
             src: source.source,
             derived: outputs,
+            artifacts,
             fingerprint,
         },
         files,
@@ -426,7 +450,7 @@ fn write_lockfiles(dir: &Path, files: &Lockfiles) -> Result<()> {
         _ => {}
     }
     for (file, content) in files {
-        let path = dir.join(lock::SRC_DIR).join(file);
+        let path = dir.join(file);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(io)?;
         }

@@ -35,6 +35,9 @@ pub enum ConfigError {
     #[error("package `{0}`: set exactly one of `rev` and `tag`")]
     #[diagnostic(code(fetchrix::config::fetch))]
     InvalidFetch(String),
+    #[error("package `{package}`, prepare: {message}")]
+    #[diagnostic(code(fetchrix::config::prepare))]
+    InvalidPrepare { package: String, message: String },
     #[error("package `{package}`, derive `{derive}`: {message}")]
     #[diagnostic(code(fetchrix::config::invalid))]
     Invalid {
@@ -70,6 +73,8 @@ pub struct Package {
     #[serde(default)]
     pub transform: Vec<Transform>,
     pub fetch: FetchSpec,
+    /// Changes to a copy of the fetched source before derive runs on it.
+    pub prepare: Option<Prepare>,
     #[serde(default)]
     pub derive: BTreeMap<String, DeriveSpec>,
 }
@@ -82,8 +87,12 @@ impl Package {
     /// Never; the settings always serialize to JSON.
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        let canonical = serde_json::to_vec(&(&self.fetch, &self.derive))
-            .expect("fetch and derive settings always serialize");
+        // Without `prepare` the tuple keeps the fingerprints of older entries.
+        let canonical = match &self.prepare {
+            Some(prepare) => serde_json::to_vec(&(&self.fetch, &self.derive, prepare)),
+            None => serde_json::to_vec(&(&self.fetch, &self.derive)),
+        }
+        .expect("fetch, derive, and prepare settings always serialize");
         nix_compat::nixhash::NixHash::from(nix_compat::nixhash::Sha256::digest_bytes(canonical))
             .to_sri_string()
     }
@@ -207,6 +216,65 @@ pub enum FetchSpec {
         leave_dot_git: bool,
         #[serde(default)]
         sparse_checkout: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Prepare {
+    /// Run in order in a writable copy of the source.
+    #[serde(default)]
+    pub steps: Vec<Step>,
+    /// Files written to `<out>/<package>/<name>`, keyed by `name`.
+    #[serde(default)]
+    pub artifacts: BTreeMap<String, Artifact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Step {
+    /// Generates or completes `package-lock.json` without installing.
+    NpmLock {
+        sub_dir: Option<String>,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    /// Generates `composer.lock`, or refreshes the content hash of an
+    /// existing one, without installing.
+    ComposerLock {
+        sub_dir: Option<String>,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    /// Runs a local program; `run[0]` is a path relative to the configuration
+    /// file.
+    Hook {
+        run: Vec<String>,
+        sub_dir: Option<String>,
+    },
+}
+
+impl Step {
+    #[must_use]
+    pub fn sub_dir(&self) -> Option<&str> {
+        match self {
+            Self::NpmLock { sub_dir, .. }
+            | Self::ComposerLock { sub_dir, .. }
+            | Self::Hook { sub_dir, .. } => sub_dir.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Artifact {
+    /// A file of the prepared source.
+    File { path: String },
+    /// The changes made by `steps`, as a `-p1` patch, limited to `paths`
+    /// when given.
+    Patch {
+        #[serde(default)]
+        paths: Vec<String>,
     },
 }
 
@@ -386,6 +454,9 @@ impl Config {
             {
                 return Err(ConfigError::InvalidFetch(package.clone()));
             }
+            if let Some(prepare) = &spec.prepare {
+                validate_prepare(package, prepare)?;
+            }
             for (derive, d) in &spec.derive {
                 let message = match (d.strategy, &d.attr, d.kind) {
                     (Strategy::Fod, None, _) => Some("`strategy = \"fod\"` requires `attr`"),
@@ -411,6 +482,55 @@ impl Config {
         }
         Ok(())
     }
+}
+
+fn validate_prepare(package: &str, prepare: &Prepare) -> Result<(), ConfigError> {
+    let invalid = |message| ConfigError::InvalidPrepare {
+        package: package.to_owned(),
+        message,
+    };
+    for step in &prepare.steps {
+        if !step.sub_dir().is_none_or(is_relative_dir) {
+            return Err(invalid(
+                "step `sub_dir` must be a relative path without `.`, `..`, or empty segments"
+                    .into(),
+            ));
+        }
+        if let Step::Hook { run, .. } = step
+            && !run.first().is_some_and(|program| program.contains('/'))
+        {
+            return Err(invalid(
+                "hook `run` must start with a path such as `./scripts/prepare.sh`".into(),
+            ));
+        }
+    }
+    for (name, artifact) in &prepare.artifacts {
+        if !is_file_name(name) || name == crate::lock::SRC_DIR {
+            return Err(invalid(format!(
+                "invalid artifact name `{name}`; use a file name other than `{}`",
+                crate::lock::SRC_DIR
+            )));
+        }
+        let paths = match artifact {
+            Artifact::File { path } => std::slice::from_ref(path),
+            Artifact::Patch { paths } => paths.as_slice(),
+        };
+        if !paths.iter().all(|p| is_relative_dir(p)) {
+            return Err(invalid(format!(
+                "artifact `{name}`: paths must be relative without `.`, `..`, or empty segments"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `name` is usable as a file name in the output directory.
+fn is_file_name(name: &str) -> bool {
+    !name.starts_with('.')
+        && !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 /// Whether `dir` stays inside the tree it is joined to; extracted lock files
@@ -575,6 +695,80 @@ mod tests {
             .unwrap_err();
             assert!(matches!(err, ConfigError::InvalidFetch(_)), "{err:?}");
         }
+    }
+
+    #[test]
+    fn parses_prepare() {
+        let config = parse(
+            r#"
+            [packages.foo]
+            version = { source = "manual", version = "1" }
+            fetch = { type = "url", url = "https://example.org" }
+            [packages.foo.prepare]
+            steps = [
+              { type = "npm-lock", sub_dir = "web", args = ["--legacy-peer-deps"] },
+              { type = "composer-lock" },
+              { type = "hook", run = ["./fix.sh", "x"] },
+            ]
+            artifacts."fix.patch" = { type = "patch", paths = ["web/package.json"] }
+            artifacts."composer.lock" = { type = "file", path = "composer.lock" }
+            "#,
+        )
+        .unwrap();
+        let prepare = config.packages["foo"].prepare.as_ref().unwrap();
+        assert_eq!(prepare.steps.len(), 3);
+        assert_eq!(prepare.steps[0].sub_dir(), Some("web"));
+        assert_eq!(prepare.artifacts.len(), 2);
+    }
+
+    #[test]
+    fn rejects_invalid_prepare() {
+        for prepare in [
+            r#"steps = [{ type = "hook", run = ["bash"] }]"#,
+            r#"steps = [{ type = "npm-lock", sub_dir = "../x" }]"#,
+            r#"artifacts.src = { type = "file", path = "a" }"#,
+            r#"artifacts."a/b" = { type = "file", path = "a" }"#,
+            r#"artifacts.p = { type = "patch", paths = ["/etc"] }"#,
+        ] {
+            let err = parse(&format!(
+                r#"
+                [packages.foo]
+                version = {{ source = "manual", version = "1" }}
+                fetch = {{ type = "url", url = "https://example.org" }}
+                [packages.foo.prepare]
+                {prepare}
+                "#
+            ))
+            .unwrap_err();
+            assert!(matches!(err, ConfigError::InvalidPrepare { .. }), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn fingerprint_ignores_absent_prepare() {
+        let text = r#"
+            [packages.foo]
+            version = { source = "manual", version = "1" }
+            fetch = { type = "url", url = "https://example.org" }
+        "#;
+        let plain = parse(text).unwrap().packages["foo"].fingerprint();
+        let canonical = serde_json::to_vec(&(
+            &FetchSpec::Url {
+                url: Template("https://example.org".into()),
+            },
+            &BTreeMap::<String, DeriveSpec>::new(),
+        ))
+        .unwrap();
+        let expected = nix_compat::nixhash::NixHash::from(
+            nix_compat::nixhash::Sha256::digest_bytes(canonical),
+        )
+        .to_sri_string();
+        assert_eq!(plain, expected);
+        let prepared = parse(&format!("{text}\n[packages.foo.prepare]\n"))
+            .unwrap()
+            .packages["foo"]
+            .fingerprint();
+        assert_ne!(plain, prepared);
     }
 
     #[test]

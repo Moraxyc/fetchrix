@@ -36,6 +36,7 @@
           "lockfile": "web/src/frontend/package-lock.json"
         }
       },
+      "artifacts": { "fix.patch": "web/fix.patch" },
       "fingerprint": "sha256-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
     },
     "baz": {

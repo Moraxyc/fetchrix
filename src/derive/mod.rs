@@ -1,5 +1,7 @@
 //! Hashes and lock files derived from a fetched source.
 
+pub mod prepare;
+
 use std::{collections::BTreeMap, path::Path};
 
 use miette::Diagnostic;
@@ -38,6 +40,9 @@ pub enum DeriveError {
     #[error("{0} is not supported yet")]
     #[diagnostic(code(fetchrix::derive::unsupported))]
     Unsupported(&'static str),
+    #[error("prepare: {0}")]
+    #[diagnostic(code(fetchrix::derive::prepare))]
+    Prepare(String),
 }
 
 type Result<T, E = DeriveError> = std::result::Result<T, E>;
