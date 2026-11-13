@@ -67,6 +67,7 @@ fn endpoint(spec: &VersionSpec) -> Option<String> {
         VersionSpec::Crates { name } => format!("https://crates.io/api/v1/crates/{name}"),
         VersionSpec::Npm { name } => format!("https://registry.npmjs.org/{name}/latest"),
         VersionSpec::Regex { url, .. } => url.clone(),
+        VersionSpec::Manifest { url, .. } => url.clone(),
         VersionSpec::Manual { .. } => return None,
     })
 }
@@ -170,8 +171,80 @@ fn extract(spec: &VersionSpec, body: &[u8]) -> Result<String> {
                 SourceError::NoMatch(format!("`{}` matched nothing", regex.as_str()))
             })
         }
+        VersionSpec::Manifest {
+            format,
+            field,
+            strip_prefix,
+            ..
+        } => {
+            use crate::config::ManifestFormat;
+            let raw = match format {
+                ManifestFormat::Json => {
+                    let v: serde_json::Value = json(body)?;
+                    v.get(field.as_str())
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            SourceError::NoMatch(format!(
+                                "field `{field}` not found or not a string in JSON manifest"
+                            ))
+                        })?
+                }
+                ManifestFormat::Yaml => {
+                    let text = String::from_utf8_lossy(body);
+                    yaml_top_level(&text, field)
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            SourceError::NoMatch(format!(
+                                "field `{field}` not found in YAML manifest"
+                            ))
+                        })?
+                }
+            };
+            strip(&raw, strip_prefix.as_deref())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    SourceError::NoMatch(format!(
+                        "manifest version `{raw}` lacks the prefix"
+                    ))
+                })
+        }
         VersionSpec::Manual { version } => Ok(version.clone()),
     }
+}
+
+/// Extracts a top-level string value from a minimal YAML document.
+///
+/// Only handles top-level `key: value` lines where the value is an unquoted
+/// or single-/double-quoted scalar. This is sufficient for update manifests
+/// produced by Electron Builder and similar tools.
+fn yaml_top_level<'a>(body: &'a str, field: &str) -> Option<&'a str> {
+    for line in body.lines() {
+        let line = line.trim();
+        // Skip comments and blank lines.
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        // We only want top-level keys; nested keys are indented.
+        let Some(rest) = line.strip_prefix(field) else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix(':') else {
+            continue;
+        };
+        let value = rest.trim();
+        // Strip surrounding quotes if present.
+        let value = if (value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\''))
+        {
+            &value[1..value.len() - 1]
+        } else {
+            value
+        };
+        return Some(value);
+    }
+    None
 }
 
 fn strip<'a>(tag: &'a str, prefix: Option<&str>) -> Option<&'a str> {
@@ -329,6 +402,62 @@ mod tests {
         };
         let page = b"foo-1.9.tar foo-1.10.tar foo-1.2.tar";
         assert_eq!(extract(&spec, page).unwrap(), "1.10");
+    }
+
+    #[test]
+    fn extracts_yaml_manifest() {
+        let spec = VersionSpec::Manifest {
+            url: String::new(),
+            format: crate::config::ManifestFormat::Yaml,
+            field: "version".into(),
+            strip_prefix: None,
+        };
+        assert_eq!(
+            extract(&spec, include_bytes!("fixtures/electron-latest.yml")).unwrap(),
+            "33.4.5"
+        );
+    }
+
+    #[test]
+    fn extracts_yaml_manifest_with_strip() {
+        let spec = VersionSpec::Manifest {
+            url: String::new(),
+            format: crate::config::ManifestFormat::Yaml,
+            field: "version".into(),
+            strip_prefix: Some("33.".into()),
+        };
+        assert_eq!(
+            extract(&spec, include_bytes!("fixtures/electron-latest.yml")).unwrap(),
+            "4.5"
+        );
+    }
+
+    #[test]
+    fn extracts_json_manifest() {
+        let spec = VersionSpec::Manifest {
+            url: String::new(),
+            format: crate::config::ManifestFormat::Json,
+            field: "version".into(),
+            strip_prefix: None,
+        };
+        assert_eq!(
+            extract(&spec, include_bytes!("fixtures/update-manifest.json")).unwrap(),
+            "1.5.0"
+        );
+    }
+
+    #[test]
+    fn manifest_missing_field_errors() {
+        let spec = VersionSpec::Manifest {
+            url: String::new(),
+            format: crate::config::ManifestFormat::Yaml,
+            field: "nonexistent".into(),
+            strip_prefix: None,
+        };
+        assert!(matches!(
+            extract(&spec, include_bytes!("fixtures/electron-latest.yml")),
+            Err(SourceError::NoMatch(_))
+        ));
     }
 
     #[tokio::test]

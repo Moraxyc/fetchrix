@@ -138,9 +138,30 @@ pub enum VersionSpec {
         url: String,
         regex: Pattern,
     },
+    /// Fetches a structured update manifest (JSON or YAML) from a fixed URL and
+    /// extracts the version from a named top-level field.
+    Manifest {
+        url: String,
+        format: ManifestFormat,
+        /// Top-level field name containing the version string; defaults to `"version"`.
+        #[serde(default = "default_version_field")]
+        field: String,
+        strip_prefix: Option<String>,
+    },
     Manual {
         version: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ManifestFormat {
+    Json,
+    Yaml,
+}
+
+fn default_version_field() -> String {
+    "version".to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

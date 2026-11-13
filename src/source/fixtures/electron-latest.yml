@@ -1,0 +1,8 @@
+version: 33.4.5
+files:
+  - url: MyApp-33.4.5.dmg
+    sha512: abc123==
+    size: 123456789
+path: MyApp-33.4.5.dmg
+sha512: abc123==
+releaseDate: '2024-11-01T12:00:00.000Z'
