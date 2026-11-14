@@ -8,10 +8,6 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
-    treefmt-nix = {
-      url = "github:numtide/treefmt-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -21,8 +17,18 @@
 
       imports = [
         inputs.flake-parts.flakeModules.easyOverlay
-        inputs.treefmt-nix.flakeModule
+        inputs.flake-parts.flakeModules.partitions
       ];
+
+      partitions.dev = {
+        module = ./nix/dev/flake-module.nix;
+        extraInputsFlake = ./nix/dev;
+      };
+      partitionedAttrs = {
+        checks = "dev";
+        devShells = "dev";
+        formatter = "dev";
+      };
 
       flake.lib = import ./nix/lib.nix { inherit (inputs.nixpkgs) lib; };
 
@@ -37,19 +43,29 @@
           packages = {
             fetchrix = pkgs.callPackage ./nix/package.nix { };
             default = config.packages.fetchrix;
+            fetchrix-static =
+              if pkgs.stdenv.hostPlatform.isDarwin then
+                (config.packages.fetchrix.override {
+                  aws-lc = pkgs.aws-lc.override { useSharedLibraries = false; };
+                }).overrideAttrs
+                  (old: {
+                    buildInputs = old.buildInputs ++ [ pkgs.pkgsStatic.libiconv ];
+                    stripAllList = [ "bin" ];
+                  })
+              else
+                (pkgs.pkgsStatic.callPackage ./nix/package.nix {
+                  # The musl-targeting Go cannot link aws-lc's symbol reader or its cgo test runner.
+                  aws-lc = (pkgs.pkgsStatic.aws-lc.override { inherit (pkgs) go; }).overrideAttrs {
+                    doCheck = false;
+                  };
+                }).overrideAttrs
+                  {
+                    doCheck = false;
+                    stripAllList = [ "bin" ];
+                  };
           }
           // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-            fetchrix-static =
-              (pkgs.pkgsStatic.callPackage ./nix/package.nix {
-                # The musl-targeting Go cannot link aws-lc's symbol reader or its cgo test runner.
-                aws-lc = (pkgs.pkgsStatic.aws-lc.override { inherit (pkgs) go; }).overrideAttrs {
-                  doCheck = false;
-                };
-              }).overrideAttrs
-                {
-                  doCheck = false;
-                  stripAllList = [ "bin" ];
-                };
+            fetchrix-deb = pkgs.callPackage ./nix/deb.nix { inherit (config.packages) fetchrix-static; };
           };
 
           overlayAttrs = { inherit (config.packages) fetchrix; };
@@ -70,26 +86,7 @@
             });
           }
           // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-            static = config.packages.fetchrix-static;
-          };
-
-          treefmt = {
-            projectRootFile = "flake.nix";
-            programs = {
-              rustfmt.enable = true;
-              nixfmt.enable = true;
-              taplo.enable = true;
-            };
-          };
-
-          devShells.default = pkgs.mkShell {
-            inputsFrom = [ config.packages.default ];
-            packages = [
-              pkgs.clippy
-              pkgs.git-cliff
-              pkgs.rust-analyzer
-              pkgs.rustfmt
-            ];
+            deb = config.packages.fetchrix-deb;
           };
         };
     };

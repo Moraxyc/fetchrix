@@ -1,0 +1,13 @@
+Package: @pname@
+Version: @version@
+Architecture: @architecture@
+Maintainer: Moraxyc <i@qaq.li>
+Installed-Size: @installedSize@
+Depends: git
+Recommends: nix-bin
+Section: devel
+Priority: optional
+Homepage: @homepage@
+Description: @description@
+ Fetches upstream releases, records them in a lock file, and computes the
+ fixed-output hashes that Nix packages need.
