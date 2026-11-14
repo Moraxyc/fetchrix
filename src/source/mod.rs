@@ -4,7 +4,10 @@ mod git;
 mod version;
 
 use miette::Diagnostic;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{
+    Deserialize, Deserializer,
+    de::{DeserializeOwned, DeserializeSeed, IgnoredAny, MapAccess, Visitor},
+};
 use thiserror::Error;
 
 use crate::{
@@ -188,64 +191,56 @@ fn manifest(
     strip_prefix: Option<&str>,
     body: &[u8],
 ) -> Result<String> {
+    let seed = TopLevel(field);
     let raw = match format {
         DataFormat::Json => {
-            let v: serde_json::Value = json(body)?;
-            v.get(field)
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    SourceError::NoMatch(format!(
-                        "field `{field}` not found or not a string in JSON manifest"
-                    ))
-                })?
+            let mut de = serde_json::Deserializer::from_slice(body);
+            seed.deserialize(&mut de)
+                .and_then(|v| de.end().map(|()| v))
+                .map_err(|e| SourceError::Decode(e.to_string()))?
         }
         DataFormat::Yaml => {
-            let text = String::from_utf8_lossy(body);
-            yaml_top_level(&text, field)
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    SourceError::NoMatch(format!("field `{field}` not found in YAML manifest"))
-                })?
+            serde_saphyr::with_deserializer_from_slice(body, |de| seed.deserialize(de))
+                .map_err(|e| SourceError::Decode(e.to_string()))?
         }
-    };
+    }
+    .ok_or_else(|| SourceError::NoMatch(format!("field `{field}` not found in the manifest")))?;
     strip(&raw, strip_prefix)
         .map(str::to_owned)
         .ok_or_else(|| SourceError::NoMatch(format!("manifest version `{raw}` lacks the prefix")))
 }
 
-/// Extracts a top-level string value from a minimal YAML document.
-///
-/// Only handles top-level `key: value` lines where the value is an unquoted
-/// or single-/double-quoted scalar. This is sufficient for update manifests
-/// produced by Electron Builder and similar tools.
-fn yaml_top_level<'a>(body: &'a str, field: &str) -> Option<&'a str> {
-    for line in body.lines() {
-        let line = line.trim();
-        // Skip comments and blank lines.
-        if line.starts_with('#') || line.is_empty() {
-            continue;
-        }
-        // We only want top-level keys; nested keys are indented.
-        let Some(rest) = line.strip_prefix(field) else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        let Some(rest) = rest.strip_prefix(':') else {
-            continue;
-        };
-        let value = rest.trim();
-        // Strip surrounding quotes if present.
-        let value = if (value.starts_with('"') && value.ends_with('"'))
-            || (value.starts_with('\'') && value.ends_with('\''))
-        {
-            &value[1..value.len() - 1]
-        } else {
-            value
-        };
-        return Some(value);
+/// Reads the string at top-level key `.0` of a map. The value is read as a
+/// string, so a YAML scalar such as `1.10` keeps its spelling.
+#[derive(Clone, Copy)]
+struct TopLevel<'a>(&'a str);
+
+impl<'de> DeserializeSeed<'de> for TopLevel<'_> {
+    type Value = Option<String>;
+
+    fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+        de.deserialize_map(self)
     }
-    None
+}
+
+impl<'de> Visitor<'de> for TopLevel<'_> {
+    type Value = Option<String>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a map")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut found = None;
+        while let Some(key) = map.next_key::<String>()? {
+            if key == self.0 {
+                found = Some(map.next_value()?);
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(found)
+    }
 }
 
 fn strip<'a>(tag: &'a str, prefix: Option<&str>) -> Option<&'a str> {
@@ -431,6 +426,26 @@ mod tests {
             extract(&spec, include_bytes!("fixtures/electron-latest.yml")).unwrap(),
             "4.5"
         );
+    }
+
+    #[test]
+    fn manifest_keeps_version_spelling() {
+        let spec = |format| VersionSpec::Manifest {
+            url: String::new(),
+            format,
+            field: "version".into(),
+            strip_prefix: None,
+        };
+        let yaml = b"# comment\nfiles:\n  - version: 0.1\nversion: 1.10 # comment\n";
+        assert_eq!(extract(&spec(DataFormat::Yaml), yaml).unwrap(), "1.10");
+        assert_eq!(
+            extract(&spec(DataFormat::Yaml), b"version: '2.0'\n").unwrap(),
+            "2.0"
+        );
+        assert!(matches!(
+            extract(&spec(DataFormat::Json), br#"{"version": 1}"#),
+            Err(SourceError::Decode(_))
+        ));
     }
 
     #[test]
