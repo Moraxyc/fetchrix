@@ -8,7 +8,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use thiserror::Error;
 
 use crate::{
-    config::VersionSpec,
+    config::{ManifestFormat, Pattern, VersionSpec},
     http::{Client, HttpError},
 };
 
@@ -66,8 +66,7 @@ fn endpoint(spec: &VersionSpec) -> Option<String> {
         VersionSpec::Pypi { name } => format!("https://pypi.org/pypi/{name}/json"),
         VersionSpec::Crates { name } => format!("https://crates.io/api/v1/crates/{name}"),
         VersionSpec::Npm { name } => format!("https://registry.npmjs.org/{name}/latest"),
-        VersionSpec::Regex { url, .. } => url.clone(),
-        VersionSpec::Manifest { url, .. } => url.clone(),
+        VersionSpec::Regex { url, .. } | VersionSpec::Manifest { url, .. } => url.clone(),
         VersionSpec::Manual { .. } => return None,
     })
 }
@@ -106,19 +105,7 @@ fn extract(spec: &VersionSpec, body: &[u8]) -> Result<String> {
             strip_prefix,
             filter,
             ..
-        } => {
-            let refs = git::parse_refs(body)?;
-            let tags = refs
-                .iter()
-                .filter_map(|r| r.name.strip_prefix("refs/tags/"))
-                .filter(|t| !t.ends_with("^{}"))
-                .filter(|t| filter.as_ref().is_none_or(|pat| pat.as_regex().is_match(t)))
-                .filter_map(|t| strip(t, strip_prefix.as_deref()))
-                .filter(|t| t.starts_with(|c: char| c.is_ascii_digit()));
-            version::max(tags)
-                .map(str::to_owned)
-                .ok_or_else(|| SourceError::NoMatch("no matching tag".into()))
-        }
+        } => latest_tag(body, strip_prefix.as_deref(), filter.as_ref()),
         VersionSpec::Git { branch, .. } => {
             let target = branch
                 .as_ref()
@@ -176,41 +163,55 @@ fn extract(spec: &VersionSpec, body: &[u8]) -> Result<String> {
             field,
             strip_prefix,
             ..
-        } => {
-            use crate::config::ManifestFormat;
-            let raw = match format {
-                ManifestFormat::Json => {
-                    let v: serde_json::Value = json(body)?;
-                    v.get(field.as_str())
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned)
-                        .ok_or_else(|| {
-                            SourceError::NoMatch(format!(
-                                "field `{field}` not found or not a string in JSON manifest"
-                            ))
-                        })?
-                }
-                ManifestFormat::Yaml => {
-                    let text = String::from_utf8_lossy(body);
-                    yaml_top_level(&text, field)
-                        .map(str::to_owned)
-                        .ok_or_else(|| {
-                            SourceError::NoMatch(format!(
-                                "field `{field}` not found in YAML manifest"
-                            ))
-                        })?
-                }
-            };
-            strip(&raw, strip_prefix.as_deref())
+        } => manifest(*format, field, strip_prefix.as_deref(), body),
+        VersionSpec::Manual { version } => Ok(version.clone()),
+    }
+}
+
+fn latest_tag(body: &[u8], strip_prefix: Option<&str>, filter: Option<&Pattern>) -> Result<String> {
+    let refs = git::parse_refs(body)?;
+    let tags = refs
+        .iter()
+        .filter_map(|r| r.name.strip_prefix("refs/tags/"))
+        .filter(|t| !t.ends_with("^{}"))
+        .filter(|t| filter.is_none_or(|pat| pat.as_regex().is_match(t)))
+        .filter_map(|t| strip(t, strip_prefix))
+        .filter(|t| t.starts_with(|c: char| c.is_ascii_digit()));
+    version::max(tags)
+        .map(str::to_owned)
+        .ok_or_else(|| SourceError::NoMatch("no matching tag".into()))
+}
+
+fn manifest(
+    format: ManifestFormat,
+    field: &str,
+    strip_prefix: Option<&str>,
+    body: &[u8],
+) -> Result<String> {
+    let raw = match format {
+        ManifestFormat::Json => {
+            let v: serde_json::Value = json(body)?;
+            v.get(field)
+                .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
                 .ok_or_else(|| {
                     SourceError::NoMatch(format!(
-                        "manifest version `{raw}` lacks the prefix"
+                        "field `{field}` not found or not a string in JSON manifest"
                     ))
-                })
+                })?
         }
-        VersionSpec::Manual { version } => Ok(version.clone()),
-    }
+        ManifestFormat::Yaml => {
+            let text = String::from_utf8_lossy(body);
+            yaml_top_level(&text, field)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    SourceError::NoMatch(format!("field `{field}` not found in YAML manifest"))
+                })?
+        }
+    };
+    strip(&raw, strip_prefix)
+        .map(str::to_owned)
+        .ok_or_else(|| SourceError::NoMatch(format!("manifest version `{raw}` lacks the prefix")))
 }
 
 /// Extracts a top-level string value from a minimal YAML document.

@@ -258,8 +258,7 @@ fn check_npm_lock(content: &[u8]) -> Result<()> {
 
 /// Rejects pnpm lock files missing the `lockfileVersion` key.
 fn check_pnpm_lock(content: &[u8]) -> Result<()> {
-    let text =
-        std::str::from_utf8(content).map_err(|e| DeriveError::PnpmLock(e.to_string()))?;
+    let text = std::str::from_utf8(content).map_err(|e| DeriveError::PnpmLock(e.to_string()))?;
     if !text.lines().any(|l| l.starts_with("lockfileVersion:")) {
         return Err(DeriveError::PnpmLock(
             "missing `lockfileVersion` key".into(),
