@@ -327,7 +327,12 @@ pub struct DeriveSpec {
     pub kind: Option<DeriveKind>,
     pub strategy: Strategy,
     pub sub_dir: Option<String>,
+    /// A flake installable, or an attribute path in `file` when set.
     pub attr: Option<String>,
+    /// Nix file for `fod`, relative to the configuration, or a lookup path
+    /// such as `<nixpkgs>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -506,6 +511,9 @@ impl Config {
                     (Strategy::Fod, None, _) => Some("`strategy = \"fod\"` requires `attr`"),
                     (Strategy::Lockfile, Some(_), _) => {
                         Some("`attr` is only used with `strategy = \"fod\"`")
+                    }
+                    (Strategy::Lockfile, ..) if d.file.is_some() => {
+                        Some("`file` is only used with `strategy = \"fod\"`")
                     }
                     (Strategy::Lockfile, _, None) => {
                         Some("`strategy = \"lockfile\"` requires `kind`")
@@ -724,6 +732,51 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn file_is_only_for_fod() {
+        let text = |strategy| {
+            format!(
+                r#"
+                [packages.foo]
+                version = {{ source = "manual", version = "1" }}
+                fetch = {{ type = "url", url = "https://example.org" }}
+                [packages.foo.derive.vendorHash]
+                kind = "go-modules"
+                strategy = "{strategy}"
+                file = "default.nix"
+                {}
+                "#,
+                if strategy == "fod" {
+                    r#"attr = "foo.goModules""#
+                } else {
+                    ""
+                }
+            )
+        };
+        let config = parse(&text("fod")).unwrap();
+        assert_eq!(
+            config.packages["foo"].derive["vendorHash"].file.as_deref(),
+            Some("default.nix")
+        );
+        let err = parse(&text("lockfile")).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn fingerprint_ignores_absent_file() {
+        let spec = DeriveSpec {
+            kind: None,
+            strategy: Strategy::Fod,
+            sub_dir: None,
+            attr: Some(".#foo".into()),
+            file: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&spec).unwrap(),
+            r#"{"kind":null,"strategy":"fod","sub_dir":null,"attr":".#foo"}"#
+        );
     }
 
     #[test]

@@ -2,7 +2,11 @@
 
 pub mod prepare;
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    ffi::{OsStr, OsString},
+    path::Path,
+};
 
 use miette::Diagnostic;
 use nix_compat::nixhash::NixHash;
@@ -11,6 +15,7 @@ use thiserror::Error;
 use crate::{
     config::{DeriveKind, DeriveSpec, Strategy},
     fetch::{FetchError, Fetcher},
+    nixpkgs::nix_file,
 };
 
 #[derive(Debug, Error, Diagnostic)]
@@ -66,8 +71,9 @@ pub enum Output {
 
 pub struct Deriver<'a> {
     pub fetcher: &'a Fetcher<'a>,
-    /// Directory that relative flake references in `attr` resolve against.
-    pub flake_dir: &'a Path,
+    /// Directory of the configuration; relative flake references and files
+    /// in `fod` resolve against it.
+    pub config_dir: &'a Path,
 }
 
 impl Deriver<'_> {
@@ -83,23 +89,26 @@ impl Deriver<'_> {
                     .attr
                     .as_deref()
                     .ok_or(DeriveError::Unsupported("`fod` without `attr`"))?;
-                self.fod(attr, src).await.map(Output::Hash)
+                self.fod(attr, spec.file.as_deref(), src)
+                    .await
+                    .map(Output::Hash)
             }
             Strategy::Lockfile => self.lockfile(spec, src).await,
         }
     }
 
-    /// Builds `attr` with `src` and an empty output hash, and reads the real
-    /// hash from the mismatch error.
-    async fn fod(&self, attr: &str, src: &Path) -> Result<NixHash> {
+    /// Builds `attr`, from `file` when given, with `src` and an empty output
+    /// hash, and reads the real hash from the mismatch error.
+    async fn fod(&self, attr: &str, file: Option<&str>, src: &Path) -> Result<NixHash> {
         let apply = format!(
             "drv: (drv.overrideAttrs (old: {{ src = builtins.path {{ path = /. + {path}; name = \"source\"; }}; }} \
              // (if old ? hash then {{ hash = \"\"; }} else {{ outputHash = \"\"; outputHashAlgo = \"sha256\"; }}))).drvPath",
             path = nix_string(&src.to_string_lossy()),
         );
-        let eval = self
-            .nix(&["eval", "--impure", "--raw", attr, "--apply", &apply])
-            .await?;
+        let mut args: Vec<OsString> = vec!["eval".into(), "--impure".into(), "--raw".into()];
+        args.extend(eval_target(attr, file, self.config_dir));
+        args.extend(["--apply".into(), apply.into()]);
+        let eval = self.nix(&args).await?;
         if !eval.status.success() {
             return Err(DeriveError::Nix(format!(
                 "cannot evaluate `{attr}`:\n{}",
@@ -107,7 +116,7 @@ impl Deriver<'_> {
             )));
         }
         let drv = format!("{}^out", String::from_utf8_lossy(&eval.stdout).trim());
-        let build = self.nix(&["build", "--no-link", &drv]).await?;
+        let build = self.nix(&["build", "--no-link", drv.as_str()]).await?;
         if build.status.success() {
             return Err(DeriveError::Nix(format!(
                 "`{attr}` built with an empty hash; it must be a fixed-output derivation"
@@ -180,10 +189,10 @@ impl Deriver<'_> {
         })
     }
 
-    async fn nix(&self, args: &[&str]) -> Result<std::process::Output> {
+    async fn nix(&self, args: &[impl AsRef<OsStr>]) -> Result<std::process::Output> {
         tokio::process::Command::new("nix")
             .args(args)
-            .current_dir(self.flake_dir)
+            .current_dir(self.config_dir)
             .kill_on_drop(true)
             .output()
             .await
@@ -191,6 +200,15 @@ impl Deriver<'_> {
                 context: "cannot run nix".into(),
                 source,
             })
+    }
+}
+
+/// Arguments that select `attr` for `nix eval`: a flake installable, or an
+/// attribute path in `file`.
+fn eval_target(attr: &str, file: Option<&str>, config_dir: &Path) -> Vec<OsString> {
+    match file {
+        Some(file) => vec!["--file".into(), nix_file(file, config_dir), attr.into()],
+        None => vec![attr.into()],
     }
 }
 
@@ -331,6 +349,27 @@ mod tests {
             check_npm_lock(br#"{"lockfileVersion": 1, "dependencies": {}}"#),
             Err(DeriveError::NpmLock(_))
         ));
+    }
+
+    #[test]
+    fn selects_attr_from_file() {
+        let dir = Path::new("/repo");
+        assert_eq!(
+            eval_target(".#foo.goModules", None, dir),
+            [OsString::from(".#foo.goModules")]
+        );
+        assert_eq!(
+            eval_target("foo.goModules", Some("default.nix"), dir),
+            [
+                OsString::from("--file"),
+                "/repo/default.nix".into(),
+                "foo.goModules".into()
+            ]
+        );
+        assert_eq!(
+            eval_target("hello", Some("<nixpkgs>"), dir),
+            [OsString::from("--file"), "<nixpkgs>".into(), "hello".into()]
+        );
     }
 
     #[test]

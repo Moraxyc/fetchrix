@@ -102,6 +102,19 @@ relative to the configuration file, is evaluated as a Nix file:
 nixpkgs = "./npins/nixpkgs.nix"
 ```
 
+### Hashes of fixed-output derivations
+
+A `fod` derive builds `attr` with an empty hash and records the hash Nix
+reports. `attr` is a flake installable such as `.#foo.goModules`, or, with
+`file`, an attribute path in a Nix file relative to the configuration:
+
+```toml
+[packages.foo.derive.vendorHash]
+strategy = "fod"
+file = "default.nix"
+attr = "foo.goModules"
+```
+
 ## Development
 
 ```sh

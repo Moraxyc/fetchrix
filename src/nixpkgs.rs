@@ -23,9 +23,12 @@ impl Nixpkgs {
     #[must_use]
     pub fn new(value: Option<&str>, config_dir: &Path) -> Self {
         match value.unwrap_or("nixpkgs") {
-            v if v.starts_with('<') && v.ends_with('>') => Self::File(v.into()),
-            v if v.starts_with('/') || v.starts_with("./") || v.starts_with("../") => {
-                Self::File(config_dir.join(v).into_os_string())
+            v if (v.starts_with('<') && v.ends_with('>'))
+                || v.starts_with('/')
+                || v.starts_with("./")
+                || v.starts_with("../") =>
+            {
+                Self::File(nix_file(v, config_dir))
             }
             v => Self::Flake {
                 reference: v.to_owned(),
@@ -51,6 +54,17 @@ impl Nixpkgs {
             }
             Self::File(file) => vec!["--file".into(), file.clone(), attr.into()],
         }
+    }
+}
+
+/// A `--file` argument: a lookup path such as `<nixpkgs>` as is, any other
+/// path relative to `dir`.
+#[must_use]
+pub fn nix_file(value: &str, dir: &Path) -> OsString {
+    if value.starts_with('<') && value.ends_with('>') {
+        value.into()
+    } else {
+        dir.join(value).into_os_string()
     }
 }
 
