@@ -2,6 +2,18 @@
 
 Update package sources and derived hashes for Nix.
 
+## Binary cache
+
+To use the public binary cache, add to `nix.conf`:
+
+```ini
+extra-substituters = https://nix-cache.qaq.li/fetchrix
+extra-trusted-public-keys = fetchrix:VDPvJo80cjEoWiPDXAKKrNu3RXet40rlcXFZFvbsscM=
+```
+
+Or pass these values to Nix with `--extra-substituters` and
+`--extra-trusted-public-keys`.
+
 ## Usage
 
 `fetchrix update` writes `_sources/lock.json` and extracted lock files under
