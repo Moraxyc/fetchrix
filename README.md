@@ -94,12 +94,19 @@ steps = [
   { type = "hook", run = ["./scripts/patch-foo.sh"] },
 ]
 artifacts."fix.patch" = { type = "patch", paths = ["package.json", "package-lock.json"] }
+
+[packages.bar.prepare]
+artifacts."pubspec.lock.json" = { type = "json", path = "pubspec.lock", format = "yaml" }
+artifacts."meta.json" = { type = "json", path = "package.json", fields = ["/version", "/pnpm/overrides"] }
 ```
 
 `npm-lock` and `composer-lock` take tools from `[nix].nixpkgs`. A `hook`
 runs a program given by a path relative to the configuration file, with
 `FETCHRIX_SOURCE` and `FETCHRIX_VERSION` set. A `patch` artifact holds
-the changes made by the steps, applicable with `patches`.
+the changes made by the steps, applicable with `patches`. A `json` artifact
+converts a JSON or YAML file (`format`, `json` by default) to JSON for
+`lib.importJSON`. With `fields`, a list of JSON pointers, it keeps only those
+fields at their original positions, and a missing field fails the update.
 
 ### Choosing nixpkgs
 

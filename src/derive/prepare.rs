@@ -6,12 +6,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde_json::{Map, Value};
 use tempfile::TempDir;
 use tokio::process::Command;
 
 use super::{DeriveError, Result, tail};
 use crate::{
-    config::{Artifact, Prepare, Step},
+    config::{Artifact, DataFormat, JsonPointer, Prepare, Step},
     nixpkgs::Nixpkgs,
 };
 
@@ -109,16 +110,28 @@ impl Preparer<'_> {
             git.snapshot().await?;
         }
         for (name, artifact) in &prepare.artifacts {
-            let content =
-                match artifact {
-                    Artifact::File { path: file } => tokio::fs::read(path.join(file))
+            let read = |file: &str| {
+                let (full, context) = (
+                    path.join(file),
+                    format!("cannot read artifact `{name}` from {file}"),
+                );
+                async move {
+                    tokio::fs::read(full)
                         .await
-                        .map_err(|source| DeriveError::Io {
-                            context: format!("cannot read artifact `{name}` from {file}"),
-                            source,
-                        })?,
-                    Artifact::Patch { paths } => git.diff(paths).await?,
-                };
+                        .map_err(|source| DeriveError::Io { context, source })
+                }
+            };
+            let content = match artifact {
+                Artifact::File { path: file } => read(file).await?,
+                Artifact::Patch { paths } => git.diff(paths).await?,
+                Artifact::Json {
+                    path: file,
+                    format,
+                    fields,
+                } => to_json(&read(file).await?, *format, fields).map_err(|e| {
+                    DeriveError::Prepare(format!("artifact `{name}` from {file}: {e}"))
+                })?,
+            };
             tokio::fs::write(artifact_dir.join(name), &content)
                 .await
                 .map_err(io("cannot write an artifact"))?;
@@ -199,6 +212,48 @@ impl Preparer<'_> {
             }
         }
     }
+}
+
+/// Parses `content` as `format`, YAML with 1.2 Core booleans, and writes it as pretty JSON with only
+/// `fields`, at their original positions, or everything when there are none.
+fn to_json(
+    content: &[u8],
+    format: DataFormat,
+    fields: &[JsonPointer],
+) -> std::result::Result<Vec<u8>, String> {
+    let value: Value = match format {
+        DataFormat::Json => serde_json::from_slice(content).map_err(|e| e.to_string())?,
+        DataFormat::Yaml => serde_saphyr::from_slice_with_options(
+            content,
+            serde_saphyr::options! { strict_booleans: true },
+        )
+        .map_err(|e| e.to_string())?,
+    };
+    let value = if fields.is_empty() {
+        value
+    } else {
+        let mut picked = Value::Object(Map::new());
+        for field in fields {
+            let mut from = &value;
+            let mut to = &mut picked;
+            for key in field.keys() {
+                from = from
+                    .as_object()
+                    .and_then(|o| o.get(&key))
+                    .ok_or_else(|| format!("no object field at `{field}`"))?;
+                to = to
+                    .as_object_mut()
+                    .expect("every value on the way is an object, as in the source")
+                    .entry(key)
+                    .or_insert_with(|| Value::Object(Map::new()));
+            }
+            to.clone_from(from);
+        }
+        picked
+    };
+    let mut text = serde_json::to_vec_pretty(&value).expect("JSON values always serialize");
+    text.push(b'\n');
+    Ok(text)
 }
 
 fn describe(step: &Step) -> String {
@@ -326,6 +381,11 @@ mod tests {
         std::fs::write(src.path().join("a.txt"), "original\n").unwrap();
         std::fs::write(src.path().join("b.txt"), "kept\n").unwrap();
         std::fs::write(src.path().join(".gitignore"), "new.txt\n").unwrap();
+        std::fs::write(
+            src.path().join("pubspec.lock"),
+            "packages:\n  args:\n    version: \"2.5.0\"\nsdks:\n  dart: \">=3.0.0\"\n",
+        )
+        .unwrap();
         std::fs::set_permissions(
             src.path().join("a.txt"),
             std::fs::Permissions::from_mode(0o444),
@@ -348,6 +408,14 @@ mod tests {
                     "fix.patch".into(),
                     Artifact::Patch {
                         paths: vec!["a.txt".into(), "new.txt".into()],
+                    },
+                ),
+                (
+                    "pubspec.lock.json".into(),
+                    Artifact::Json {
+                        path: "pubspec.lock".into(),
+                        format: DataFormat::Yaml,
+                        fields: vec![pointer("/packages")],
                     },
                 ),
             ]),
@@ -380,6 +448,57 @@ mod tests {
         assert!(patch.contains("-original\n+changed"), "{patch}");
         assert!(patch.contains("+++ b/new.txt"), "{patch}");
         assert!(!patch.contains("b.txt"), "{patch}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&artifacts["pubspec.lock.json"]).unwrap(),
+            serde_json::json!({ "packages": { "args": { "version": "2.5.0" } } })
+        );
+    }
+
+    fn pointer(s: &str) -> JsonPointer {
+        s.to_owned().try_into().unwrap()
+    }
+
+    fn json(content: &str, format: DataFormat, fields: &[&str]) -> Result<Value, String> {
+        let fields: Vec<_> = fields.iter().map(|f| pointer(f)).collect();
+        let out = to_json(content.as_bytes(), format, &fields)?;
+        assert!(out.ends_with(b"}\n") || out.ends_with(b"]\n"));
+        Ok(serde_json::from_slice(&out).unwrap())
+    }
+
+    #[test]
+    fn converts_yaml_to_json() {
+        let yaml = "a: &x\n  n: 1\n  s: '01'\n  t: yes\nb: *x\nl: [1.5, null, true]\n";
+        assert_eq!(
+            json(yaml, DataFormat::Yaml, &[]).unwrap(),
+            serde_json::json!({
+                "a": { "n": 1, "s": "01", "t": "yes" },
+                "b": { "n": 1, "s": "01", "t": "yes" },
+                "l": [1.5, null, true],
+            })
+        );
+        assert!(json("a: [\n", DataFormat::Yaml, &[]).is_err());
+    }
+
+    #[test]
+    fn extracts_json_fields() {
+        let doc = r#"{
+            "name": "x",
+            "version": "1",
+            "a/b": { "c": { "d": 1, "e": 2 }, "f": 3 },
+            "list": [1]
+        }"#;
+        assert_eq!(
+            json(doc, DataFormat::Json, &["/version", "/a~1b/c/d", "/a~1b/c"]).unwrap(),
+            serde_json::json!({ "version": "1", "a/b": { "c": { "d": 1, "e": 2 } } })
+        );
+        assert_eq!(
+            json(doc, DataFormat::Json, &["/a~1b", "/a~1b/f"]).unwrap(),
+            serde_json::json!({ "a/b": { "c": { "d": 1, "e": 2 }, "f": 3 } })
+        );
+        for missing in ["/missing", "/version/x", "/list/0"] {
+            let err = json(doc, DataFormat::Json, &[missing]).unwrap_err();
+            assert!(err.contains(missing), "{err}");
+        }
     }
 
     #[tokio::test]

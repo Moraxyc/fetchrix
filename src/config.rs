@@ -142,7 +142,7 @@ pub enum VersionSpec {
     /// extracts the version from a named top-level field.
     Manifest {
         url: String,
-        format: ManifestFormat,
+        format: DataFormat,
         /// Top-level field name containing the version string; defaults to `"version"`.
         #[serde(default = "default_version_field")]
         field: String,
@@ -153,9 +153,10 @@ pub enum VersionSpec {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ManifestFormat {
+pub enum DataFormat {
+    #[default]
     Json,
     Yaml,
 }
@@ -318,6 +319,57 @@ pub enum Artifact {
         #[serde(default)]
         paths: Vec<String>,
     },
+    /// A JSON or YAML file of the prepared source as JSON, limited to
+    /// `fields` when given.
+    Json {
+        path: String,
+        #[serde(default)]
+        format: DataFormat,
+        #[serde(default)]
+        fields: Vec<JsonPointer>,
+    },
+}
+
+/// An RFC 6901 JSON pointer such as `/dependencies/foo`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct JsonPointer(String);
+
+impl JsonPointer {
+    /// The unescaped object keys along the pointer.
+    pub fn keys(&self) -> impl Iterator<Item = String> {
+        self.0[1..]
+            .split('/')
+            .map(|key| key.replace("~1", "/").replace("~0", "~"))
+    }
+}
+
+impl fmt::Display for JsonPointer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<JsonPointer> for String {
+    fn from(p: JsonPointer) -> Self {
+        p.0
+    }
+}
+
+impl TryFrom<String> for JsonPointer {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        let escapes_valid = s
+            .match_indices('~')
+            .all(|(i, _)| matches!(s.as_bytes().get(i + 1), Some(b'0' | b'1')));
+        if !s.starts_with('/') || !escapes_valid {
+            return Err(format!(
+                "`{s}` is not a JSON pointer such as `/dependencies`; escape `~` as `~0` and `/` as `~1`"
+            ));
+        }
+        Ok(Self(s))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -578,7 +630,7 @@ fn validate_prepare(package: &str, prepare: &Prepare) -> Result<(), ConfigError>
             )));
         }
         let paths = match artifact {
-            Artifact::File { path } => std::slice::from_ref(path),
+            Artifact::File { path } | Artifact::Json { path, .. } => std::slice::from_ref(path),
             Artifact::Patch { paths } => paths.as_slice(),
         };
         if !paths.iter().all(|p| is_relative_dir(p)) {
@@ -858,13 +910,44 @@ mod tests {
             ]
             artifacts."fix.patch" = { type = "patch", paths = ["web/package.json"] }
             artifacts."composer.lock" = { type = "file", path = "composer.lock" }
+            artifacts."pubspec.lock.json" = { type = "json", path = "pubspec.lock", format = "yaml" }
+            artifacts."deps.json" = { type = "json", path = "package.json", fields = ["/a~1b~0c/d"] }
             "#,
         )
         .unwrap();
         let prepare = config.packages["foo"].prepare.as_ref().unwrap();
         assert_eq!(prepare.steps.len(), 3);
         assert_eq!(prepare.steps[0].sub_dir(), Some("web"));
-        assert_eq!(prepare.artifacts.len(), 2);
+        assert_eq!(prepare.artifacts.len(), 4);
+        assert!(matches!(
+            prepare.artifacts["pubspec.lock.json"],
+            Artifact::Json {
+                format: DataFormat::Yaml,
+                ..
+            }
+        ));
+        let Artifact::Json { format, fields, .. } = &prepare.artifacts["deps.json"] else {
+            panic!("`deps.json` is a json artifact");
+        };
+        assert_eq!(*format, DataFormat::Json);
+        assert_eq!(fields[0].keys().collect::<Vec<_>>(), ["a/b~c", "d"]);
+    }
+
+    #[test]
+    fn rejects_invalid_json_pointer() {
+        for field in ["", "version", "/a~2", "/a~"] {
+            let err = parse(&format!(
+                r#"
+                [packages.foo]
+                version = {{ source = "manual", version = "1" }}
+                fetch = {{ type = "url", url = "https://example.org" }}
+                [packages.foo.prepare]
+                artifacts."a.json" = {{ type = "json", path = "a.json", fields = ["{field}"] }}
+                "#
+            ))
+            .unwrap_err();
+            assert!(matches!(err, ConfigError::Parse { .. }), "{field}: {err:?}");
+        }
     }
 
     #[test]
@@ -875,6 +958,7 @@ mod tests {
             r#"artifacts.src = { type = "file", path = "a" }"#,
             r#"artifacts."a/b" = { type = "file", path = "a" }"#,
             r#"artifacts.p = { type = "patch", paths = ["/etc"] }"#,
+            r#"artifacts."a.json" = { type = "json", path = "../a.json" }"#,
         ] {
             let err = parse(&format!(
                 r#"

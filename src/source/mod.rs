@@ -8,7 +8,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use thiserror::Error;
 
 use crate::{
-    config::{ManifestFormat, Pattern, VersionSpec},
+    config::{DataFormat, Pattern, VersionSpec},
     http::{Client, HttpError},
 };
 
@@ -183,13 +183,13 @@ fn latest_tag(body: &[u8], strip_prefix: Option<&str>, filter: Option<&Pattern>)
 }
 
 fn manifest(
-    format: ManifestFormat,
+    format: DataFormat,
     field: &str,
     strip_prefix: Option<&str>,
     body: &[u8],
 ) -> Result<String> {
     let raw = match format {
-        ManifestFormat::Json => {
+        DataFormat::Json => {
             let v: serde_json::Value = json(body)?;
             v.get(field)
                 .and_then(serde_json::Value::as_str)
@@ -200,7 +200,7 @@ fn manifest(
                     ))
                 })?
         }
-        ManifestFormat::Yaml => {
+        DataFormat::Yaml => {
             let text = String::from_utf8_lossy(body);
             yaml_top_level(&text, field)
                 .map(str::to_owned)
@@ -409,7 +409,7 @@ mod tests {
     fn extracts_yaml_manifest() {
         let spec = VersionSpec::Manifest {
             url: String::new(),
-            format: crate::config::ManifestFormat::Yaml,
+            format: crate::config::DataFormat::Yaml,
             field: "version".into(),
             strip_prefix: None,
         };
@@ -423,7 +423,7 @@ mod tests {
     fn extracts_yaml_manifest_with_strip() {
         let spec = VersionSpec::Manifest {
             url: String::new(),
-            format: crate::config::ManifestFormat::Yaml,
+            format: crate::config::DataFormat::Yaml,
             field: "version".into(),
             strip_prefix: Some("33.".into()),
         };
@@ -437,7 +437,7 @@ mod tests {
     fn extracts_json_manifest() {
         let spec = VersionSpec::Manifest {
             url: String::new(),
-            format: crate::config::ManifestFormat::Json,
+            format: crate::config::DataFormat::Json,
             field: "version".into(),
             strip_prefix: None,
         };
@@ -451,7 +451,7 @@ mod tests {
     fn manifest_missing_field_errors() {
         let spec = VersionSpec::Manifest {
             url: String::new(),
-            format: crate::config::ManifestFormat::Yaml,
+            format: crate::config::DataFormat::Yaml,
             field: "nonexistent".into(),
             strip_prefix: None,
         };
