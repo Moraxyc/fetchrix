@@ -64,8 +64,6 @@ jobs:
   release:
     needs: [build]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     env:
       PROJECT_ID: fetchrix
       RELEASE_TAG: ${{ github.ref_name }}
@@ -90,9 +88,16 @@ jobs:
           done
       - name: Release notes
         run: nix run --inputs-from . nixpkgs#git-cliff -- --latest --strip header --output notes.md
+      - name: Create GitHub App token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
       - name: Create release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --notes-file notes.md \
             dist/bin/* dist/deb/* SHA256SUMS
