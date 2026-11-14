@@ -15,6 +15,7 @@ use crate::{
     config::FetchSpec,
     http::{Client, HttpError},
     lock::LockedSource,
+    nixpkgs::Nixpkgs,
 };
 
 #[derive(Debug, Error, Diagnostic)]
@@ -61,10 +62,8 @@ fn io(context: impl Into<String>) -> impl FnOnce(std::io::Error) -> FetchError {
 
 pub struct Fetcher<'a> {
     pub client: &'a Client,
-    /// Flake reference that provides `nix-prefetch-git`.
-    pub nixpkgs: &'a str,
-    /// Directory whose flake inputs resolve `nixpkgs`.
-    pub flake_dir: &'a Path,
+    /// Provides `nix-prefetch-git`.
+    pub nixpkgs: &'a Nixpkgs,
 }
 
 /// The ref Nix fetchers resolve: `tag` becomes `refs/tags/<tag>`.
@@ -225,9 +224,7 @@ impl Fetcher<'_> {
         let mut command = tokio::process::Command::new("nix");
         command
             .arg("run")
-            .arg("--inputs-from")
-            .arg(self.flake_dir)
-            .arg(format!("{}#nix-prefetch-git", self.nixpkgs))
+            .args(self.nixpkgs.installable("nix-prefetch-git"))
             .args(["--", "--quiet", "--url", url, "--rev", rev]);
         if submodules {
             command.arg("--fetch-submodules");

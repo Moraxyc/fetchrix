@@ -10,7 +10,10 @@ use tempfile::TempDir;
 use tokio::process::Command;
 
 use super::{DeriveError, Result, tail};
-use crate::config::{Artifact, Prepare, Step};
+use crate::{
+    config::{Artifact, Prepare, Step},
+    nixpkgs::Nixpkgs,
+};
 
 /// The prepared tree and the declared artifacts read from it.
 pub struct Prepared {
@@ -21,9 +24,9 @@ pub struct Prepared {
 }
 
 pub struct Preparer<'a> {
-    /// Flake reference that provides the tools of built-in steps.
-    pub nixpkgs: &'a str,
-    /// Directory of the configuration; hooks and `nixpkgs` resolve against it.
+    /// Provides the tools of built-in steps.
+    pub nixpkgs: &'a Nixpkgs,
+    /// Directory of the configuration; hooks resolve against it.
     pub config_dir: &'a Path,
     pub version: &'a str,
 }
@@ -142,9 +145,7 @@ impl Preparer<'_> {
             let mut command = Command::new("nix");
             command
                 .arg("shell")
-                .arg("--inputs-from")
-                .arg(self.config_dir)
-                .arg(format!("{}#{installable}", self.nixpkgs))
+                .args(self.nixpkgs.installable(installable))
                 .args(["--command", program]);
             command
         };
@@ -341,7 +342,7 @@ mod tests {
             ]),
         };
         let prepared = Preparer {
-            nixpkgs: "nixpkgs",
+            nixpkgs: &Nixpkgs::new(None, config_dir.path()),
             config_dir: config_dir.path(),
             version: "1.2.3",
         }
@@ -382,7 +383,7 @@ mod tests {
             artifacts: BTreeMap::new(),
         };
         let Err(DeriveError::Prepare(message)) = (Preparer {
-            nixpkgs: "nixpkgs",
+            nixpkgs: &Nixpkgs::new(None, config_dir.path()),
             config_dir: config_dir.path(),
             version: "1",
         })

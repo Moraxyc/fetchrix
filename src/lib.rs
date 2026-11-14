@@ -7,6 +7,7 @@ pub mod error;
 pub mod fetch;
 pub mod http;
 pub mod lock;
+pub mod nixpkgs;
 pub mod source;
 pub mod ui;
 pub mod verify;
@@ -362,10 +363,10 @@ async fn resolve(
     fingerprint: String,
 ) -> Result<(LockedPackage, Lockfiles)> {
     let package: &Package = &config.packages[name];
+    let nixpkgs = nixpkgs::Nixpkgs::new(config.nix.nixpkgs.as_deref(), flake_dir);
     let fetcher = fetch::Fetcher {
         client,
-        nixpkgs: config.nix.nixpkgs.as_deref().unwrap_or("nixpkgs"),
-        flake_dir,
+        nixpkgs: &nixpkgs,
     };
     progress.stage(Stage::Fetch);
     let source = fetcher.fetch(&package.fetch, &raw).await?;
@@ -379,7 +380,7 @@ async fn resolve(
     let prepared = match &package.prepare {
         Some(prepare) => {
             let preparer = derive::prepare::Preparer {
-                nixpkgs: fetcher.nixpkgs,
+                nixpkgs: &nixpkgs,
                 config_dir: flake_dir,
                 version: &version,
             };

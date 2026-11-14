@@ -89,6 +89,19 @@ runs a program given by a path relative to the configuration file, with
 `FETCHRIX_SOURCE` and `FETCHRIX_VERSION` set. A `patch` artifact holds
 the changes made by the steps, applicable with `patches`.
 
+### Choosing nixpkgs
+
+`[nix].nixpkgs` provides `nix-prefetch-git` and the tools of `prepare` steps.
+A flake reference, `nixpkgs` by default, resolves against the inputs of the
+flake that contains the configuration, or the flake registry outside a flake.
+A lookup path such as `<nixpkgs>`, or a path starting with `/`, `./` or `../`
+relative to the configuration file, is evaluated as a Nix file:
+
+```toml
+[nix]
+nixpkgs = "./npins/nixpkgs.nix"
+```
+
 ## Development
 
 ```sh
