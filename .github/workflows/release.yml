@@ -95,9 +95,10 @@ jobs:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           permission-contents: write
-      - name: Create release
+      - name: Create and publish release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --notes-file notes.md \
+          gh release create "$RELEASE_TAG" --draft --verify-tag --title "$RELEASE_TAG" --notes-file notes.md \
             dist/bin/* dist/deb/* SHA256SUMS
+          gh release edit "$RELEASE_TAG" --draft=false
