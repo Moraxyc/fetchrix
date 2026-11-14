@@ -9,7 +9,7 @@ use std::{
 };
 
 use miette::Diagnostic;
-use nix_compat::nixhash::NixHash;
+use nix_compat::nixhash::{HashAlgo, NixHash};
 use thiserror::Error;
 
 use crate::{
@@ -100,8 +100,19 @@ impl Deriver<'_> {
     }
 
     /// Builds `attr`, from `file` when given, with `src` and an empty output
-    /// hash, and reads the real hash from the mismatch error.
+    /// hash, and reads the real hash from the mismatch error. The derivation
+    /// must be fixed-output before the override, which would make any
+    /// derivation one.
     async fn fod(&self, attr: &str, spec: &DeriveSpec, src: &Path) -> Result<NixHash> {
+        #[derive(serde::Deserialize)]
+        struct Drvs {
+            fod: String,
+            empty: String,
+        }
+        let target = spec
+            .select
+            .as_deref()
+            .map_or_else(|| format!("`{attr}`"), |s| format!("`{s}` of `{attr}`"));
         let apply = fod_apply(src, spec.select.as_deref(), self.version, self.artifacts);
         let mut args: Vec<OsString> = vec!["eval".into(), "--impure".into(), "--raw".into()];
         args.extend(eval_target(attr, spec.file.as_deref(), self.config_dir));
@@ -113,22 +124,42 @@ impl Deriver<'_> {
                 tail(&eval.stderr)
             )));
         }
-        let drv = format!("{}^out", String::from_utf8_lossy(&eval.stdout).trim());
-        let build = self.nix(&["build", "--no-link", drv.as_str()]).await?;
-        if build.status.success() {
+        let drvs: Drvs = serde_json::from_slice(&eval.stdout)
+            .map_err(|e| DeriveError::Nix(format!("unexpected `nix eval` output: {e}")))?;
+        let show = self
+            .nix(&["derivation", "show", drvs.fod.as_str(), drvs.empty.as_str()])
+            .await?;
+        if !show.status.success() {
             return Err(DeriveError::Nix(format!(
-                "`{attr}` built with an empty hash; it must be a fixed-output derivation"
+                "cannot show the derivations of {target}:\n{}",
+                tail(&show.stderr)
             )));
         }
-        let stderr = String::from_utf8_lossy(&build.stderr);
-        let got = stderr
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("got:"))
-            .map(str::trim)
-            .ok_or_else(|| {
-                DeriveError::Nix(format!("cannot build `{attr}`:\n{}", tail(&build.stderr)))
-            })?;
-        NixHash::from_sri(got)
+        if fixed_output_hash(&show.stdout, &drvs.fod)?.is_none() {
+            return Err(DeriveError::Nix(format!(
+                "{target} is not a fixed-output derivation"
+            )));
+        }
+        match fixed_output_hash(&show.stdout, &drvs.empty)? {
+            Some(hash) if is_empty_hash(&hash) => {}
+            hash => {
+                return Err(DeriveError::Nix(format!(
+                    "{target} keeps the hash `{}` after the override",
+                    hash.unwrap_or_default()
+                )));
+            }
+        }
+        let out = format!("{}^out", drvs.empty);
+        let build = self.nix(&["build", "--no-link", out.as_str()]).await?;
+        if build.status.success() {
+            return Err(DeriveError::Nix(format!(
+                "{target} built with an empty hash"
+            )));
+        }
+        let got = mismatch_got(&String::from_utf8_lossy(&build.stderr), &drvs.empty).ok_or_else(
+            || DeriveError::Nix(format!("cannot build {target}:\n{}", tail(&build.stderr))),
+        )?;
+        NixHash::from_sri(&got)
             .map_err(|e| DeriveError::Nix(format!("unexpected hash `{got}`: {e}")))
     }
 
@@ -210,20 +241,30 @@ fn eval_target(attr: &str, file: Option<&str>, config_dir: &Path) -> Vec<OsStrin
     }
 }
 
-/// The `--apply` function from the value of `attr` to the `drvPath` of the
-/// FOD with an empty hash. Without `select` the value is the FOD and its `src`
-/// is replaced; with it the value is a function of
-/// `{ src, version, artifacts }` whose result holds the FOD at `select`.
+/// The `--apply` function from the value of `attr` to JSON with the `drvPath`
+/// of the FOD, `fod`, and of it with an empty hash, `empty`. Without `select`
+/// the value is the FOD and its `src` is replaced; with it the value is a
+/// function of `{ src, version, artifacts }` whose result holds the FOD at
+/// `select`.
 fn fod_apply(src: &Path, select: Option<&str>, version: &str, artifacts: Option<&Path>) -> String {
     let src = format!(
         "builtins.path {{ path = /. + {}; name = \"source\"; }}",
         nix_string(&src.to_string_lossy())
     );
-    let empty_hash = "(if old ? hash then { hash = \"\"; } \
-                      else { outputHash = \"\"; outputHashAlgo = \"sha256\"; })";
+    // Fetchers such as `fetchurl` and `fetchgit` compute `outputHash` from
+    // their arguments, so overriding `hash` alone leaves it unchanged.
+    let empty_hash = "({ outputHash = \"\"; outputHashAlgo = \"sha256\"; } \
+                      // (if old ? hash then { hash = \"\"; } else { }))";
+    let json = |fod: String| {
+        format!(
+            "let fod = {fod}; in builtins.toJSON {{ fod = fod.drvPath; \
+             empty = (fod.overrideAttrs (old: {empty_hash})).drvPath; }}"
+        )
+    };
     let Some(select) = select else {
         return format!(
-            "drv: (drv.overrideAttrs (old: {{ src = {src}; }} // {empty_hash})).drvPath"
+            "drv: {}",
+            json(format!("drv.overrideAttrs {{ src = {src}; }}"))
         );
     };
     let artifacts = artifacts.map_or_else(
@@ -239,11 +280,97 @@ fn fod_apply(src: &Path, select: Option<&str>, version: &str, artifacts: Option<
     );
     let select: Vec<_> = select.split('.').map(nix_string).collect();
     format!(
-        "f: ((f {{ src = {src}; version = {version}; artifacts = {artifacts}; }}).{select}\
-         .overrideAttrs (old: {empty_hash})).drvPath",
-        version = nix_string(version),
-        select = select.join("."),
+        "f: {}",
+        json(format!(
+            "(f {{ src = {src}; version = {version}; artifacts = {artifacts}; }}).{select}",
+            version = nix_string(version),
+            select = select.join("."),
+        ))
     )
+}
+
+/// The hash of the only output of `drv` in `nix derivation show` output, or
+/// `None` if it is not fixed. Reads format version 4, where the derivations
+/// sit under `derivations` keyed by base name, and the earlier bare map
+/// keyed by path.
+fn fixed_output_hash(show: &[u8], drv: &str) -> Result<Option<String>> {
+    let bad =
+        |why: &str| DeriveError::Nix(format!("unexpected `nix derivation show` output: {why}"));
+    let json: serde_json::Value = serde_json::from_slice(show).map_err(|e| bad(&e.to_string()))?;
+    let drvs = json.get("derivations").unwrap_or(&json);
+    let outputs = drvs
+        .as_object()
+        .and_then(|m| m.get(drv).or_else(|| m.get(base_name(drv))))
+        .and_then(|d| d.get("outputs"))
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| bad("no derivation outputs"))?;
+    if outputs.len() != 1 {
+        return Ok(None);
+    }
+    Ok(outputs
+        .values()
+        .next()
+        .and_then(|o| o.get("hash"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned))
+}
+
+/// Whether `hash` is the all-zero SHA-256 hash Nix puts in place of `""`.
+fn is_empty_hash(hash: &str) -> bool {
+    NixHash::from_str(hash, Some(HashAlgo::Sha256))
+        .is_ok_and(|h| h.digest_as_bytes().iter().all(|&b| b == 0))
+}
+
+/// The `got` hash of the fixed-output mismatch of `drv`, built with the empty
+/// hash. A mismatch of a dependency names its own derivation and is not the
+/// answer. Nix may build `drv` resolved to another path, so a derivation
+/// with the same name answers too if the hash it specified is the empty one.
+fn mismatch_got(stderr: &str, drv: &str) -> Option<String> {
+    const MISMATCH: &str = "hash mismatch in fixed-output derivation '";
+    let name = |path: &str| {
+        base_name(path)
+            .split_once('-')
+            .map(|(_, name)| name.to_owned())
+    };
+    let field = |block: &str, key: &str| {
+        block
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(key))
+            .map(str::trim)
+            .map(str::to_owned)
+    };
+    let text = strip_ansi(stderr);
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(MISMATCH) {
+        let (path, after) = rest[at + MISMATCH.len()..].split_once('\'')?;
+        let block = after.split(MISMATCH).next().unwrap_or(after);
+        let ours = path == drv
+            || (name(path) == name(drv)
+                && field(block, "specified:").is_some_and(|h| is_empty_hash(&h)));
+        if ours {
+            return field(block, "got:");
+        }
+        rest = after;
+    }
+    None
+}
+
+fn base_name(path: &str) -> &str {
+    path.rsplit_once('/').map_or(path, |(_, name)| name)
+}
+
+/// `s` without ANSI escape sequences, which Nix adds when colour is forced.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+        } else if chars.next() == Some('[') {
+            chars.by_ref().find(|c| ('@'..='~').contains(c));
+        }
+    }
+    out
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -411,7 +538,13 @@ mod tests {
         let src = Path::new("/tmp/src");
         let plain = fod_apply(src, None, "1.0", None);
         assert!(
-            plain.starts_with("drv: (drv.overrideAttrs (old: { src = "),
+            plain.starts_with("drv: let fod = drv.overrideAttrs { src = "),
+            "{plain}"
+        );
+        assert!(
+            plain.contains(
+                r#"in builtins.toJSON { fod = fod.drvPath; empty = (fod.overrideAttrs (old: ({ outputHash = ""; outputHashAlgo = "sha256"; } // (if old ? hash"#
+            ),
             "{plain}"
         );
         let called = fod_apply(
@@ -422,15 +555,70 @@ mod tests {
         );
         assert!(
             called.starts_with(
-                r#"f: ((f { src = builtins.path { path = /. + "/tmp/src"; name = "source"; }; version = "1.0"; artifacts = (let dir = "/tmp/artifacts";"#
+                r#"f: let fod = (f { src = builtins.path { path = /. + "/tmp/src"; name = "source"; }; version = "1.0"; artifacts = (let dir = "/tmp/artifacts";"#
             ),
             "{called}"
         );
         assert!(
-            called.contains(r#"})."passthru"."goModules".overrideAttrs (old: "#),
+            called.contains(r#"})."passthru"."goModules"; in builtins.toJSON {"#),
             "{called}"
         );
         assert!(fod_apply(src, Some("goModules"), "1.0", None).contains("artifacts = { }; })."),);
+    }
+
+    #[test]
+    fn reads_fixed_output_hash() {
+        let v4 = br#"{"derivations":{"x-COPYING.drv":{"outputs":{"out":{"hash":"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","method":"flat"}}}},"version":4}"#;
+        let hash = fixed_output_hash(v4, "/nix/store/x-COPYING.drv").expect("v4 is valid");
+        assert!(hash.as_deref().is_some_and(is_empty_hash), "{hash:?}");
+        let v3 = format!(
+            r#"{{"/nix/store/x-src.drv":{{"outputs":{{"out":{{"hash":"{}","hashAlgo":"r:sha256","path":"/nix/store/y-src"}}}}}}}}"#,
+            "0".repeat(64)
+        );
+        let hash = fixed_output_hash(v3.as_bytes(), "/nix/store/x-src.drv").expect("v3 is valid");
+        assert!(hash.as_deref().is_some_and(is_empty_hash), "{hash:?}");
+        let kept = br#"{"/nix/store/x.drv":{"outputs":{"out":{"hash":"sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=","method":"nar"}}}}"#;
+        let hash = fixed_output_hash(kept, "/nix/store/x.drv").expect("the output is valid");
+        assert!(
+            hash.as_deref().is_some_and(|h| !is_empty_hash(h)),
+            "{hash:?}"
+        );
+        let both = br#"{"derivations":{"a-hello.drv":{"outputs":{"out":{"path":"y-hello"}}},"b-hello.drv":{"outputs":{"out":{"hash":"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","method":"flat"}}}},"version":4}"#;
+        assert_eq!(
+            fixed_output_hash(both, "/nix/store/a-hello.drv").expect("v4 is valid"),
+            None
+        );
+        assert!(matches!(
+            fixed_output_hash(both, "/nix/store/c-hello.drv"),
+            Err(DeriveError::Nix(_))
+        ));
+    }
+
+    #[test]
+    fn takes_mismatch_of_the_derivation() {
+        let drv = "/nix/store/f9i6-COPYING.drv";
+        let stderr = "error: hash mismatch in fixed-output derivation '/nix/store/a-dep.drv':\n\
+                      \x20        specified: sha256-AAAA\n\
+                      \x20           got:    sha256-dep=\n\
+                      error: build of '\x1b[35;1m/nix/store/f9i6-COPYING.drv\x1b[0m' on 'ssh-ng://b' failed: \
+                      hash mismatch in fixed-output derivation '\x1b[35;1m/nix/store/f9i6-COPYING.drv\x1b[0m':\n\
+                      \x20        specified: \x1b[35;1msha256-AAAA\x1b[0m\n\
+                      \x20           got:    \x1b[35;1msha256-yc8G=\x1b[0m\x1b[0m\n";
+        assert_eq!(mismatch_got(stderr, drv).as_deref(), Some("sha256-yc8G="));
+        assert_eq!(mismatch_got(stderr, "/nix/store/other.drv"), None);
+        let empty = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let resolved = format!(
+            "error: hash mismatch in fixed-output derivation '/nix/store/a-source.drv':\n\
+             \x20 specified: sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\n\
+             \x20 got:    sha256-dep=\n\
+             error: hash mismatch in fixed-output derivation '/nix/store/b-source.drv':\n\
+             \x20 specified: {empty}\n\
+             \x20 got:    sha256-ours=\n"
+        );
+        assert_eq!(
+            mismatch_got(&resolved, "/nix/store/c-source.drv").as_deref(),
+            Some("sha256-ours=")
+        );
     }
 
     #[test]

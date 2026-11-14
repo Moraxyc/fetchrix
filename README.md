@@ -117,7 +117,7 @@ nixpkgs = "./npins/nixpkgs.nix"
 ### Hashes of fixed-output derivations
 
 A `fod` derive builds `attr` with an empty hash and records the hash Nix
-reports. `attr` is a flake installable such as `.#foo.goModules`, or, with
+reports; it must be a fixed-output derivation already. `attr` is a flake installable such as `.#foo.goModules`, or, with
 `file`, an attribute path in a Nix file relative to the configuration:
 
 ```toml
