@@ -21,15 +21,18 @@ jobs:
             runner: ubuntu-latest
           - system: aarch64-linux
             runner: ubuntu-24.04-arm
+          - system: aarch64-darwin
+            runner: macos-latest
     name: build (${{ matrix.system }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: wimpysworld/nothing-but-nix@b2574ec1cf1462bee0a34de0fb6ff11ad3c43cb2 # v12
+        if: runner.os == 'Linux'
       - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
         with:
-          extra_nix_config: build-dir = /nix/build
+          extra_nix_config: ${{ runner.os == 'Linux' && 'build-dir = /nix/build' || '' }}
       - uses: ryanccn/attic-action@dc99f5eb1d5c0495aa26f7b56337b30011fa153e # v0.5.2
         with:
           endpoint: ${{ vars.ATTIC_ENDPOINT }}
@@ -45,8 +48,13 @@ jobs:
           fi
       - name: Build
         run: |
-          out=$(nix build -L .#fetchrix-static --print-out-paths)
-          install -Dm755 "$out/bin/fetchrix" "dist/fetchrix-${{ matrix.system }}"
+          bin=$(nix build -L .#fetchrix-static --print-out-paths)
+          mkdir -p dist/bin
+          install -m755 "$bin/bin/fetchrix" "dist/bin/fetchrix-${{ matrix.system }}"
+          if [ "$RUNNER_OS" = Linux ]; then
+            deb=$(nix build -L .#fetchrix-deb --print-out-paths)
+            install -Dm644 -t dist/deb "$deb"/*.deb
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fetchrix-${{ matrix.system }}
@@ -58,6 +66,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      PROJECT_ID: fetchrix
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,11 +79,20 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Checksums
-        working-directory: dist
-        run: sha256sum fetchrix-* > SHA256SUMS
+        run: |
+          (cd dist/bin && sha256sum -- *) > SHA256SUMS
+          (cd dist/deb && sha256sum -- *.deb) >> SHA256SUMS
+      - name: APT manifest
+        run: |
+          for operation in manifest verify-artifacts; do
+            nix run --inputs-from ./nix/dev moraxyc-repo#moraxyc-repo -- \
+              "$operation" --artifacts dist/deb --project "$PROJECT_ID" --tag "$RELEASE_TAG"
+          done
       - name: Release notes
         run: nix run --inputs-from . nixpkgs#git-cliff -- --latest --strip header --output notes.md
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md dist/*
+        run: |
+          gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --notes-file notes.md \
+            dist/bin/* dist/deb/* SHA256SUMS
