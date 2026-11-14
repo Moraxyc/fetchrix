@@ -127,6 +127,36 @@ file = "default.nix"
 attr = "foo.goModules"
 ```
 
+The derivation at `attr` gets the fetched source as `src`. To build it from
+the whole package instead, make `attr` a function of `{ src, version,
+artifacts }`, with the values `sources.<package>` would have, and set `select`
+to the path of the derivation in its result:
+
+```toml
+[packages.foo.derive.vendorHash]
+strategy = "fod"
+file = "fod.nix"
+attr = "foo"
+select = "goModules"
+```
+
+```nix
+# fod.nix
+let
+  pkgs = import <nixpkgs> { };
+in
+{
+  foo =
+    { src, version, artifacts }:
+    pkgs.buildGoModule {
+      pname = "foo";
+      inherit src version;
+      patches = [ artifacts."fix.patch" ];
+      vendorHash = pkgs.lib.fakeHash; # replaced while building
+    };
+}
+```
+
 ## Development
 
 ```sh

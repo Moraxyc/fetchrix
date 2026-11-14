@@ -333,6 +333,10 @@ pub struct DeriveSpec {
     /// such as `<nixpkgs>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    /// Attribute path of the FOD in the package that `attr`, a function of
+    /// `{ src, version, artifacts }`, returns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -514,6 +518,16 @@ impl Config {
                     }
                     (Strategy::Lockfile, ..) if d.file.is_some() => {
                         Some("`file` is only used with `strategy = \"fod\"`")
+                    }
+                    (Strategy::Lockfile, ..) if d.select.is_some() => {
+                        Some("`select` is only used with `strategy = \"fod\"`")
+                    }
+                    _ if !d
+                        .select
+                        .as_deref()
+                        .is_none_or(|s| s.split('.').all(|segment| !segment.is_empty())) =>
+                    {
+                        Some("`select` must be an attribute path such as `goModules`")
                     }
                     (Strategy::Lockfile, _, None) => {
                         Some("`strategy = \"lockfile\"` requires `kind`")
@@ -772,11 +786,46 @@ mod tests {
             sub_dir: None,
             attr: Some(".#foo".into()),
             file: None,
+            select: None,
         };
         assert_eq!(
             serde_json::to_string(&spec).unwrap(),
             r#"{"kind":null,"strategy":"fod","sub_dir":null,"attr":".#foo"}"#
         );
+    }
+
+    #[test]
+    fn select_is_an_attr_path_for_fod() {
+        let text = |strategy, select| {
+            format!(
+                r#"
+                [packages.foo]
+                version = {{ source = "manual", version = "1" }}
+                fetch = {{ type = "url", url = "https://example.org" }}
+                [packages.foo.derive.vendorHash]
+                kind = "go-modules"
+                strategy = "{strategy}"
+                select = "{select}"
+                {}
+                "#,
+                if strategy == "fod" {
+                    r#"attr = "foo""#
+                } else {
+                    ""
+                }
+            )
+        };
+        let config = parse(&text("fod", "passthru.goModules")).unwrap();
+        assert_eq!(
+            config.packages["foo"].derive["vendorHash"]
+                .select
+                .as_deref(),
+            Some("passthru.goModules")
+        );
+        for (strategy, select) in [("fod", ""), ("fod", "a..b"), ("lockfile", "goModules")] {
+            let err = parse(&text(strategy, select)).unwrap_err();
+            assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+        }
     }
 
     #[test]

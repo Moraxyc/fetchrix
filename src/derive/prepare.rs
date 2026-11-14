@@ -21,6 +21,8 @@ pub struct Prepared {
     pub path: PathBuf,
     /// Artifact contents keyed by name.
     pub artifacts: Vec<(String, Vec<u8>)>,
+    /// The artifacts as files named by their names, for Nix to read.
+    pub artifact_dir: PathBuf,
 }
 
 pub struct Preparer<'a> {
@@ -100,6 +102,8 @@ impl Preparer<'_> {
             run(&mut command, &describe(step)).await?;
         }
 
+        let artifact_dir = work.path().join("artifacts");
+        std::fs::create_dir(&artifact_dir).map_err(io("cannot create a temporary directory"))?;
         let mut artifacts = Vec::new();
         if wants_patch {
             git.snapshot().await?;
@@ -113,30 +117,18 @@ impl Preparer<'_> {
                             context: format!("cannot read artifact `{name}` from {file}"),
                             source,
                         })?,
-                    Artifact::Patch { paths } => {
-                        let mut args: Vec<&OsStr> = [
-                            "diff",
-                            "--cached",
-                            "--no-ext-diff",
-                            "--no-color",
-                            "--binary",
-                            "--src-prefix=a/",
-                            "--dst-prefix=b/",
-                            "HEAD",
-                            "--",
-                        ]
-                        .map(OsStr::new)
-                        .to_vec();
-                        args.extend(paths.iter().map(OsStr::new));
-                        git.run(&args).await?
-                    }
+                    Artifact::Patch { paths } => git.diff(paths).await?,
                 };
+            tokio::fs::write(artifact_dir.join(name), &content)
+                .await
+                .map_err(io("cannot write an artifact"))?;
             artifacts.push((name.clone(), content));
         }
         Ok(Prepared {
             _work: work,
             path,
             artifacts,
+            artifact_dir,
         })
     }
 
@@ -239,6 +231,25 @@ impl Git<'_> {
             .args(args)
             .current_dir(self.tree);
         run(&mut command, "git").await
+    }
+
+    /// Staged changes to `paths` against the original source, as a `-p1` patch.
+    async fn diff(&self, paths: &[String]) -> Result<Vec<u8>> {
+        let mut args: Vec<&OsStr> = [
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-color",
+            "--binary",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "HEAD",
+            "--",
+        ]
+        .map(OsStr::new)
+        .to_vec();
+        args.extend(paths.iter().map(OsStr::new));
+        self.run(&args).await
     }
 
     async fn snapshot(&self) -> Result<()> {
@@ -360,6 +371,10 @@ mod tests {
             .map(|(k, v)| (k.as_str(), String::from_utf8_lossy(v).into_owned()))
             .collect();
         assert_eq!(artifacts["new.txt"], "1.2.3\n");
+        assert_eq!(
+            std::fs::read_to_string(prepared.artifact_dir.join("new.txt")).unwrap(),
+            "1.2.3\n"
+        );
         let patch = &artifacts["fix.patch"];
         assert!(patch.contains("--- a/a.txt\n+++ b/a.txt"), "{patch}");
         assert!(patch.contains("-original\n+changed"), "{patch}");

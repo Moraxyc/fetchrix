@@ -74,6 +74,10 @@ pub struct Deriver<'a> {
     /// Directory of the configuration; relative flake references and files
     /// in `fod` resolve against it.
     pub config_dir: &'a Path,
+    /// Package version passed to `fod` functions.
+    pub version: &'a str,
+    /// Directory of the prepared artifacts, one file per name.
+    pub artifacts: Option<&'a Path>,
 }
 
 impl Deriver<'_> {
@@ -89,9 +93,7 @@ impl Deriver<'_> {
                     .attr
                     .as_deref()
                     .ok_or(DeriveError::Unsupported("`fod` without `attr`"))?;
-                self.fod(attr, spec.file.as_deref(), src)
-                    .await
-                    .map(Output::Hash)
+                self.fod(attr, spec, src).await.map(Output::Hash)
             }
             Strategy::Lockfile => self.lockfile(spec, src).await,
         }
@@ -99,14 +101,10 @@ impl Deriver<'_> {
 
     /// Builds `attr`, from `file` when given, with `src` and an empty output
     /// hash, and reads the real hash from the mismatch error.
-    async fn fod(&self, attr: &str, file: Option<&str>, src: &Path) -> Result<NixHash> {
-        let apply = format!(
-            "drv: (drv.overrideAttrs (old: {{ src = builtins.path {{ path = /. + {path}; name = \"source\"; }}; }} \
-             // (if old ? hash then {{ hash = \"\"; }} else {{ outputHash = \"\"; outputHashAlgo = \"sha256\"; }}))).drvPath",
-            path = nix_string(&src.to_string_lossy()),
-        );
+    async fn fod(&self, attr: &str, spec: &DeriveSpec, src: &Path) -> Result<NixHash> {
+        let apply = fod_apply(src, spec.select.as_deref(), self.version, self.artifacts);
         let mut args: Vec<OsString> = vec!["eval".into(), "--impure".into(), "--raw".into()];
-        args.extend(eval_target(attr, file, self.config_dir));
+        args.extend(eval_target(attr, spec.file.as_deref(), self.config_dir));
         args.extend(["--apply".into(), apply.into()]);
         let eval = self.nix(&args).await?;
         if !eval.status.success() {
@@ -210,6 +208,42 @@ fn eval_target(attr: &str, file: Option<&str>, config_dir: &Path) -> Vec<OsStrin
         Some(file) => vec!["--file".into(), nix_file(file, config_dir), attr.into()],
         None => vec![attr.into()],
     }
+}
+
+/// The `--apply` function from the value of `attr` to the `drvPath` of the
+/// FOD with an empty hash. Without `select` the value is the FOD and its `src`
+/// is replaced; with it the value is a function of
+/// `{ src, version, artifacts }` whose result holds the FOD at `select`.
+fn fod_apply(src: &Path, select: Option<&str>, version: &str, artifacts: Option<&Path>) -> String {
+    let src = format!(
+        "builtins.path {{ path = /. + {}; name = \"source\"; }}",
+        nix_string(&src.to_string_lossy())
+    );
+    let empty_hash = "(if old ? hash then { hash = \"\"; } \
+                      else { outputHash = \"\"; outputHashAlgo = \"sha256\"; })";
+    let Some(select) = select else {
+        return format!(
+            "drv: (drv.overrideAttrs (old: {{ src = {src}; }} // {empty_hash})).drvPath"
+        );
+    };
+    let artifacts = artifacts.map_or_else(
+        || "{ }".to_owned(),
+        |dir| {
+            format!(
+                "(let dir = {}; in builtins.mapAttrs \
+                 (name: _: builtins.path {{ path = /. + \"${{dir}}/${{name}}\"; inherit name; }}) \
+                 (builtins.readDir (/. + dir)))",
+                nix_string(&dir.to_string_lossy())
+            )
+        },
+    );
+    let select: Vec<_> = select.split('.').map(nix_string).collect();
+    format!(
+        "f: ((f {{ src = {src}; version = {version}; artifacts = {artifacts}; }}).{select}\
+         .overrideAttrs (old: {empty_hash})).drvPath",
+        version = nix_string(version),
+        select = select.join("."),
+    )
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -370,6 +404,33 @@ mod tests {
             eval_target("hello", Some("<nixpkgs>"), dir),
             [OsString::from("--file"), "<nixpkgs>".into(), "hello".into()]
         );
+    }
+
+    #[test]
+    fn applies_package_function() {
+        let src = Path::new("/tmp/src");
+        let plain = fod_apply(src, None, "1.0", None);
+        assert!(
+            plain.starts_with("drv: (drv.overrideAttrs (old: { src = "),
+            "{plain}"
+        );
+        let called = fod_apply(
+            src,
+            Some("passthru.goModules"),
+            "1.0",
+            Some(Path::new("/tmp/artifacts")),
+        );
+        assert!(
+            called.starts_with(
+                r#"f: ((f { src = builtins.path { path = /. + "/tmp/src"; name = "source"; }; version = "1.0"; artifacts = (let dir = "/tmp/artifacts";"#
+            ),
+            "{called}"
+        );
+        assert!(
+            called.contains(r#"})."passthru"."goModules".overrideAttrs (old: "#),
+            "{called}"
+        );
+        assert!(fod_apply(src, Some("goModules"), "1.0", None).contains("artifacts = { }; })."),);
     }
 
     #[test]

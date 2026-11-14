@@ -398,6 +398,8 @@ async fn resolve(
     let deriver = derive::Deriver {
         fetcher: &fetcher,
         config_dir: flake_dir,
+        version: &version,
+        artifacts: prepared.as_ref().map(|p| p.artifact_dir.as_path()),
     };
     let mut outputs = BTreeMap::new();
     for (attr, spec) in &package.derive {
