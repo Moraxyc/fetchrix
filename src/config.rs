@@ -79,22 +79,47 @@ pub struct Package {
     pub derive: BTreeMap<String, DeriveSpec>,
 }
 
+fn sha256_sri(bytes: &[u8]) -> String {
+    nix_compat::nixhash::NixHash::from(nix_compat::nixhash::Sha256::digest_bytes(bytes))
+        .to_sri_string()
+}
+
 impl Package {
-    /// Hash of the settings that determine the locked source and derived hashes.
+    /// Hash of the settings that determine the locked source and derived hashes,
+    /// including the content of hook programs and their `inputs`, which resolve
+    /// against `config_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a hook file cannot be read.
     ///
     /// # Panics
     ///
     /// Never; the settings always serialize to JSON.
-    #[must_use]
-    pub fn fingerprint(&self) -> String {
-        // Without `prepare` the tuple keeps the fingerprints of older entries.
-        let canonical = match &self.prepare {
-            Some(prepare) => serde_json::to_vec(&(&self.fetch, &self.derive, prepare)),
-            None => serde_json::to_vec(&(&self.fetch, &self.derive)),
+    pub fn fingerprint(&self, config_dir: &Path) -> Result<String, ConfigError> {
+        let mut files = BTreeMap::new();
+        for step in self.prepare.iter().flat_map(|p| &p.steps) {
+            if let Step::Hook { run, inputs, .. } = step {
+                for file in run.first().into_iter().chain(inputs) {
+                    let path = config_dir.join(file);
+                    let content = std::fs::read(&path).map_err(|source| ConfigError::Io {
+                        path: path.display().to_string(),
+                        source,
+                    })?;
+                    files.insert(file.as_str(), sha256_sri(&content));
+                }
+            }
+        }
+        // Optional parts are left out when absent so older entries keep their fingerprints.
+        let canonical = match (&self.prepare, files.is_empty()) {
+            (Some(prepare), false) => {
+                serde_json::to_vec(&(&self.fetch, &self.derive, prepare, files))
+            }
+            (Some(prepare), true) => serde_json::to_vec(&(&self.fetch, &self.derive, prepare)),
+            (None, _) => serde_json::to_vec(&(&self.fetch, &self.derive)),
         }
         .expect("fetch, derive, and prepare settings always serialize");
-        nix_compat::nixhash::NixHash::from(nix_compat::nixhash::Sha256::digest_bytes(canonical))
-            .to_sri_string()
+        Ok(sha256_sri(&canonical))
     }
 }
 
@@ -291,6 +316,10 @@ pub enum Step {
     Hook {
         run: Vec<String>,
         sub_dir: Option<String>,
+        /// Other files, relative to the configuration file, that the program
+        /// reads; their content is part of the fingerprint.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        inputs: Vec<String>,
     },
 }
 
@@ -614,12 +643,18 @@ fn validate_prepare(package: &str, prepare: &Prepare) -> Result<(), ConfigError>
                     .into(),
             ));
         }
-        if let Step::Hook { run, .. } = step
-            && !run.first().is_some_and(|program| program.contains('/'))
-        {
-            return Err(invalid(
-                "hook `run` must start with a path such as `./scripts/prepare.sh`".into(),
-            ));
+        if let Step::Hook { run, inputs, .. } = step {
+            if !run.first().is_some_and(|program| program.contains('/')) {
+                return Err(invalid(
+                    "hook `run` must start with a path such as `./scripts/prepare.sh`".into(),
+                ));
+            }
+            if !inputs.iter().all(|p| is_relative_dir(p)) {
+                return Err(invalid(
+                    "hook `inputs` must be relative paths without `.`, `..`, or empty segments"
+                        .into(),
+                ));
+            }
         }
     }
     for (name, artifact) in &prepare.artifacts {
@@ -954,6 +989,7 @@ mod tests {
     fn rejects_invalid_prepare() {
         for prepare in [
             r#"steps = [{ type = "hook", run = ["bash"] }]"#,
+            r#"steps = [{ type = "hook", run = ["./a"], inputs = ["../b"] }]"#,
             r#"steps = [{ type = "npm-lock", sub_dir = "../x" }]"#,
             r#"artifacts.src = { type = "file", path = "a" }"#,
             r#"artifacts."a/b" = { type = "file", path = "a" }"#,
@@ -981,7 +1017,9 @@ mod tests {
             version = { source = "manual", version = "1" }
             fetch = { type = "url", url = "https://example.org" }
         "#;
-        let plain = parse(text).unwrap().packages["foo"].fingerprint();
+        let plain = parse(text).unwrap().packages["foo"]
+            .fingerprint(Path::new("/nonexistent"))
+            .unwrap();
         let canonical = serde_json::to_vec(&(
             &FetchSpec::Url {
                 url: Template("https://example.org".into()),
@@ -997,8 +1035,37 @@ mod tests {
         let prepared = parse(&format!("{text}\n[packages.foo.prepare]\n"))
             .unwrap()
             .packages["foo"]
-            .fingerprint();
+            .fingerprint(Path::new("/nonexistent"))
+            .unwrap();
         assert_ne!(plain, prepared);
+    }
+
+    #[test]
+    fn fingerprint_covers_hook_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = &parse(
+            r#"
+            [packages.foo]
+            version = { source = "manual", version = "1" }
+            fetch = { type = "url", url = "https://example.org" }
+            [packages.foo.prepare]
+            steps = [{ type = "hook", run = ["./fix.sh"], inputs = ["data/a.txt"] }]
+            "#,
+        )
+        .unwrap()
+        .packages["foo"];
+        let err = package.fingerprint(dir.path()).unwrap_err();
+        assert!(matches!(err, ConfigError::Io { .. }), "{err:?}");
+        std::fs::create_dir(dir.path().join("data")).unwrap();
+        std::fs::write(dir.path().join("fix.sh"), "a").unwrap();
+        std::fs::write(dir.path().join("data/a.txt"), "a").unwrap();
+        let first = package.fingerprint(dir.path()).unwrap();
+        std::fs::write(dir.path().join("fix.sh"), "b").unwrap();
+        let second = package.fingerprint(dir.path()).unwrap();
+        std::fs::write(dir.path().join("data/a.txt"), "b").unwrap();
+        let third = package.fingerprint(dir.path()).unwrap();
+        assert_ne!(first, second);
+        assert_ne!(second, third);
     }
 
     #[test]

@@ -394,6 +394,7 @@ mod tests {
 
         let prepare = Prepare {
             steps: vec![Step::Hook {
+                inputs: Vec::new(),
                 run: vec!["./hook.sh".into()],
                 sub_dir: None,
             }],
@@ -507,6 +508,7 @@ mod tests {
         let src = tempfile::tempdir().unwrap();
         let prepare = Prepare {
             steps: vec![Step::Hook {
+                inputs: Vec::new(),
                 run: vec![
                     "/bin/sh".into(),
                     "-c".into(),

@@ -113,7 +113,7 @@ async fn verify_package(
     locked: Option<LockedPackage>,
 ) -> Result<String> {
     let locked = locked.ok_or(VerifyError::NotLocked)?;
-    let fingerprint = config.packages[name].fingerprint();
+    let fingerprint = config.packages[name].fingerprint(flake_dir)?;
     if locked.fingerprint != fingerprint {
         return Err(VerifyError::Stale.into());
     }
@@ -317,7 +317,7 @@ async fn update_package(
         }),
         _ => None,
     };
-    let fingerprint = package.fingerprint();
+    let fingerprint = package.fingerprint(flake_dir)?;
     if old.is_some_and(|old| {
         old.raw_version == raw
             && old.fingerprint == fingerprint

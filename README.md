@@ -102,7 +102,8 @@ artifacts."meta.json" = { type = "json", path = "package.json", fields = ["/vers
 
 `npm-lock` and `composer-lock` take tools from `[nix].nixpkgs`. A `hook`
 runs a program given by a path relative to the configuration file, with
-`FETCHRIX_SOURCE` and `FETCHRIX_VERSION` set. A `patch` artifact holds
+`FETCHRIX_SOURCE` and `FETCHRIX_VERSION` set; changes to the program, or to
+the files it lists in `inputs`, make the next update rerun it. A `patch` artifact holds
 the changes made by the steps, applicable with `patches`. A `json` artifact
 converts a JSON or YAML file (`format`, `json` by default) to JSON for
 `lib.importJSON`. With `fields`, a list of JSON pointers, it keeps only those
