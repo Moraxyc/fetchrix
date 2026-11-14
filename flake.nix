@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    systems.url = "github:nix-systems/default";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -16,7 +17,7 @@
   outputs =
     inputs:
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = inputs.nixpkgs.lib.systems.flakeExposed;
+      systems = import inputs.systems;
 
       imports = [
         inputs.flake-parts.flakeModules.easyOverlay
@@ -26,11 +27,29 @@
       flake.lib = import ./nix/lib.nix { inherit (inputs.nixpkgs) lib; };
 
       perSystem =
-        { config, pkgs, ... }:
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
         {
           packages = {
             fetchrix = pkgs.callPackage ./nix/package.nix { };
             default = config.packages.fetchrix;
+          }
+          // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            fetchrix-static =
+              (pkgs.pkgsStatic.callPackage ./nix/package.nix {
+                # The musl-targeting Go cannot link aws-lc's symbol reader or its cgo test runner.
+                aws-lc = (pkgs.pkgsStatic.aws-lc.override { inherit (pkgs) go; }).overrideAttrs {
+                  doCheck = false;
+                };
+              }).overrideAttrs
+                {
+                  doCheck = false;
+                  stripAllList = [ "bin" ];
+                };
           };
 
           overlayAttrs = { inherit (config.packages) fetchrix; };
@@ -49,6 +68,9 @@
               doCheck = false;
               installPhase = "touch $out";
             });
+          }
+          // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            static = config.packages.fetchrix-static;
           };
 
           treefmt = {
@@ -64,6 +86,7 @@
             inputsFrom = [ config.packages.default ];
             packages = [
               pkgs.clippy
+              pkgs.git-cliff
               pkgs.rust-analyzer
               pkgs.rustfmt
             ];
