@@ -14,7 +14,7 @@ pub fn detected() -> bool {
 }
 
 /// Emits one error annotation per failure and appends the summary table to
-/// `$GITHUB_STEP_SUMMARY` when set.
+/// `$GITHUB_STEP_SUMMARY` when set and some package is not unchanged.
 ///
 /// # Errors
 ///
@@ -32,6 +32,9 @@ pub fn publish(report: &Report) -> Result<(), UiError> {
     let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") else {
         return Ok(());
     };
+    let Some(summary) = summary(report) else {
+        return Ok(());
+    };
     let path = Path::new(&path);
     let io = |source| UiError::Io {
         path: path.display().to_string(),
@@ -41,16 +44,22 @@ pub fn publish(report: &Report) -> Result<(), UiError> {
         .append(true)
         .create(true)
         .open(path)
-        .and_then(|mut file| file.write_all(summary(report).as_bytes()))
+        .and_then(|mut file| file.write_all(summary.as_bytes()))
         .map_err(io)
 }
 
-fn summary(report: &Report) -> String {
+fn summary(report: &Report) -> Option<String> {
+    let mut entries = report
+        .packages
+        .iter()
+        .filter(|e| !matches!(e.status, Status::Unchanged { .. }))
+        .peekable();
+    entries.peek()?;
     let mut out = format!(
         "### fetchrix {}\n\n| Package | Old | New | Status |\n|---|---|---|---|\n",
         report.command
     );
-    for entry in &report.packages {
+    for entry in entries {
         let (old, new) = entry.status.versions();
         let cell = |v: Option<&str>| v.map_or_else(String::new, |v| v.replace('|', "\\|"));
         writeln!(
@@ -64,7 +73,7 @@ fn summary(report: &Report) -> String {
         .expect("writing to a String does not fail");
     }
     out.push('\n');
-    out
+    Some(out)
 }
 
 fn escape_data(s: &str) -> String {
@@ -101,12 +110,30 @@ mod tests {
                     name: "b".into(),
                     status: Status::Failed { error: "x".into() },
                 },
+                Entry {
+                    name: "c".into(),
+                    status: Status::changed(Some("3"), "3".into()),
+                },
             ],
         };
         assert_eq!(
-            summary(&report),
-            "### fetchrix update\n\n| Package | Old | New | Status |\n|---|---|---|---|\n\
-             | a | 1 | 2 | changed |\n| b |  |  | failed |\n\n"
+            summary(&report).as_deref(),
+            Some(
+                "### fetchrix update\n\n| Package | Old | New | Status |\n|---|---|---|---|\n\
+                 | a | 1 | 2 | changed |\n| b |  |  | failed |\n\n"
+            )
         );
+    }
+
+    #[test]
+    fn skips_summary_when_all_unchanged() {
+        let report = Report {
+            command: "update",
+            packages: vec![Entry {
+                name: "a".into(),
+                status: Status::changed(Some("1"), "1".into()),
+            }],
+        };
+        assert_eq!(summary(&report), None);
     }
 }
