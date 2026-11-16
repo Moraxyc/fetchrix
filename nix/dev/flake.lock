@@ -27,11 +27,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1794637286,
-        "narHash": "sha256-hNb460oRxADUGvxVJp7/hgkTGPAEsVhm1igwadx/IkU=",
+        "lastModified": 1794726375,
+        "narHash": "sha256-3UP7R5Qfb/PLCcfs+RKPNEJqMrufw8y3jGxtVREnU28=",
         "owner": "Moraxyc",
         "repo": "pkgs.moraxyc.com",
-        "rev": "d0cbf25f9ede3363788ee8476dcc442b93974485",
+        "rev": "923e56327c59ca6a08e857babb1d81b811282355",
         "type": "github"
       },
       "original": {
