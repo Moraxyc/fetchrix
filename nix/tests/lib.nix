@@ -10,6 +10,7 @@ let
   overlaid = pkgs.extend (
     fetchrixLib.overlay {
       dir = ./_sources;
+      config = ./fetchrix.toml;
       attr = "mySources";
     }
   );
@@ -35,6 +36,8 @@ assert foo.rawVersion == "v1.2.3";
 assert web.rawVersion == "v0.1.0";
 assert foo.src.outputHash == "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 assert foo.npmDepsHash == "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=";
+assert foo.vendorHash == lib.fakeHash;
+assert !(baz ? cargoLock);
 assert foo.cargoLock.lockFile == ./_sources/foo/src/Cargo.lock;
 assert
   foo.cargoLock.outputHashes == {

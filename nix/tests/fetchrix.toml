@@ -1,0 +1,11 @@
+[packages.foo.derive.npmDepsHash]
+strategy = "fod"
+attr = ".#foo.npmDeps"
+
+[packages.foo.derive.vendorHash]
+strategy = "fod"
+attr = ".#foo.goModules"
+
+[packages.baz.derive.cargoLock]
+kind = "cargo-vendor"
+strategy = "lockfile"

@@ -26,7 +26,10 @@ Add fetchrix as a flake input and use `fetchrix.lib.overlay` or
 
 ```nix
 overlays.default = lib.composeManyExtensions [
-  (fetchrix.lib.overlay { dir = ./_sources; }) # attr defaults to "sources"
+  (fetchrix.lib.overlay {
+    dir = ./_sources;
+    config = ./fetchrix.toml; # optional
+  }) # attr defaults to "sources"
   (final: prev: {
     foo = final.rustPlatform.buildRustPackage {
       inherit (final.sources.foo) pname version src cargoLock;
@@ -135,7 +138,11 @@ file = "default.nix"
 attr = "foo.goModules"
 ```
 
-The derivation at `attr` gets the fetched source as `src`. To build it from
+The derivation at `attr` gets the fetched source as `src`. When `load` or
+`overlay` is given `config`, a `fod` hash not locked yet is `lib.fakeHash`,
+so a package can use `sources.foo.vendorHash` before the first update.
+
+To build it from
 the whole package instead, make `attr` a function of `{ src, version,
 artifacts }`, with the values `sources.<package>` would have, and set `select`
 to the path of the derivation in its result:
