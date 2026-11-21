@@ -20,7 +20,7 @@ use auth::Credentials;
 use cli::{Cli, Command, Selection, Update};
 use config::{Config, Package, VersionSpec};
 use http::Client;
-use lock::{Derived, DerivedHash, DerivedLockfile, Lock, LockedPackage};
+use lock::{Derived, DerivedGradleDeps, DerivedHash, DerivedLockfile, Lock, LockedPackage};
 use ui::{
     Progress, Stage, Ui,
     report::{Entry, Report, Status},
@@ -117,7 +117,7 @@ async fn verify_package(
     if locked.fingerprint != fingerprint {
         return Err(VerifyError::Stale.into());
     }
-    let (actual, files) = resolve(
+    let (mut actual, files) = resolve(
         client,
         config,
         flake_dir,
@@ -126,9 +126,16 @@ async fn verify_package(
         locked.raw_version.clone(),
         |_| Ok(locked.version.clone()),
         fingerprint,
+        true,
     )
     .await?;
-    let mut diffs = verify::compare(&locked, &actual);
+    let mut diffs = verify::gradle_integrity(&locked, out_dir);
+    for (attr, entry) in &locked.derived {
+        if matches!(entry, Derived::GradleDeps(_)) {
+            actual.derived.insert(attr.clone(), entry.clone());
+        }
+    }
+    diffs.extend(verify::compare(&locked, &actual));
     for (file, content) in files {
         let path = out_dir.join(name).join(&file);
         match tokio::fs::read(&path).await {
@@ -341,6 +348,7 @@ async fn update_package(
             None => Ok(package.transform(&raw)),
         },
         fingerprint,
+        false,
     )
     .await?;
     Ok(Outcome::Updated(Box::new(new), files))
@@ -361,6 +369,7 @@ async fn resolve(
     raw: String,
     version: impl FnOnce(Option<&str>) -> Result<String>,
     fingerprint: String,
+    verifying: bool,
 ) -> Result<(LockedPackage, Lockfiles)> {
     let package: &Package = &config.packages[name];
     let nixpkgs = nixpkgs::Nixpkgs::new(config.nix.nixpkgs.as_deref(), flake_dir);
@@ -403,7 +412,20 @@ async fn resolve(
     };
     let mut outputs = BTreeMap::new();
     for (attr, spec) in &package.derive {
+        if verifying && spec.strategy == config::Strategy::GradleDeps {
+            continue;
+        }
         let entry = match deriver.derive(spec, tree).await? {
+            derive::Output::GradleDeps(content) => {
+                let hash = nix_compat::nixhash::NixHash::from(
+                    nix_compat::nixhash::Sha256::digest_bytes(&content),
+                )
+                .into();
+                let file = format!("{attr}.json");
+                let data = format!("{name}/{file}");
+                files.push((file, content));
+                Derived::GradleDeps(DerivedGradleDeps { data, hash })
+            }
             derive::Output::Hash(hash) => Derived::Hash(DerivedHash { hash: hash.into() }),
             derive::Output::Lockfile {
                 files: extracted,

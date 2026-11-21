@@ -13,6 +13,7 @@
         "hash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
       },
       "derived": {
+        "gradleDeps": { "data": "foo/gradleDeps.json", "hash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" },
         "cargoLock": {
           "lockfile": "foo/src/Cargo.lock",
           "outputHashes": { "bar-0.1.0": "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=" }

@@ -28,9 +28,23 @@ rec {
 
       unlocked =
         name:
-        lib.mapAttrs (_: _: lib.fakeHash) (
-          lib.filterAttrs (_: spec: spec.strategy == "fod") (declared.${name}.derive or { })
-        );
+        lib.mapAttrs
+          (
+            _: spec:
+            if spec.strategy == "gradle-deps" then
+              builtins.toFile "deps.json" (builtins.toJSON { "!version" = 1; })
+            else
+              lib.fakeHash
+          )
+          (
+            lib.filterAttrs (
+              _: spec:
+              builtins.elem spec.strategy [
+                "fod"
+                "gradle-deps"
+              ]
+            ) (declared.${name}.derive or { })
+          );
 
       fetchSrc =
         src:
@@ -48,7 +62,9 @@ rec {
 
       derive =
         name: src: entry:
-        if entry ? hash then
+        if entry ? data then
+          dir + "/${entry.data}"
+        else if entry ? hash then
           entry.hash
         else
           let
@@ -106,7 +122,26 @@ rec {
       }
       // unlocked name
       // lib.mapAttrs (_: derive name src) (pkg.derived or { })
-    ) parsed.packages;
+    ) parsed.packages
+    //
+      lib.mapAttrs
+        (
+          name: _:
+          {
+            pname = declared.${name}.pname or name;
+            version = "0";
+            rawVersion = "0";
+            src = builtins.toFile "source" "";
+          }
+          // unlocked name
+        )
+        (
+          lib.filterAttrs (
+            name: pkg:
+            !(parsed.packages ? ${name})
+            && lib.any (spec: spec.strategy == "gradle-deps") (builtins.attrValues (pkg.derive or { }))
+          ) declared
+        );
 
   /**
     Overlay that exposes `load { dir; config; }` as `pkgs.<attr>`, using the

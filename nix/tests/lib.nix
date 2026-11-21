@@ -29,6 +29,9 @@ let
     '';
   };
 in
+assert foo.gradleDeps == ./_sources/foo/gradleDeps.json;
+assert (lib.importJSON baz.gradleDeps)."!version" == 1;
+assert (lib.importJSON overlaid.mySources.new.gradleDeps)."!version" == 1;
 assert foo.pname == "foo-bin";
 assert web.pname == "web";
 assert foo.version == "1.2.3";

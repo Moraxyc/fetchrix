@@ -38,6 +38,11 @@ pub fn compare(locked: &LockedPackage, actual: &LockedPackage) -> Vec<String> {
     let attrs: BTreeSet<_> = locked.derived.keys().chain(actual.derived.keys()).collect();
     for attr in attrs {
         match (locked.derived.get(attr), actual.derived.get(attr)) {
+            (Some(Derived::GradleDeps(a)), Some(Derived::GradleDeps(b))) => {
+                if a != b {
+                    diffs.push(format!("{attr}: Gradle dependency data changed"));
+                }
+            }
             (Some(Derived::Hash(a)), Some(Derived::Hash(b))) => {
                 if a != b {
                     diffs.push(format!("{attr}: locked {}, got {}", a.hash, b.hash));
@@ -57,6 +62,28 @@ pub fn compare(locked: &LockedPackage, actual: &LockedPackage) -> Vec<String> {
                 describe(a),
                 describe(b)
             )),
+        }
+    }
+    diffs
+}
+
+pub(crate) fn gradle_integrity(locked: &LockedPackage, dir: &std::path::Path) -> Vec<String> {
+    let mut diffs = Vec::new();
+    for entry in locked.derived.values() {
+        if let Derived::GradleDeps(entry) = entry {
+            let path = dir.join(&entry.data);
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let hash: Hash = nix_compat::nixhash::NixHash::from(
+                        nix_compat::nixhash::Sha256::digest_bytes(&bytes),
+                    )
+                    .into();
+                    if hash != entry.hash {
+                        diffs.push(format!("{}: content hash mismatch", path.display()));
+                    }
+                }
+                Err(e) => diffs.push(format!("{}: {e}", path.display())),
+            }
         }
     }
     diffs
@@ -84,6 +111,7 @@ fn compare_hashes(
 
 fn describe(derived: Option<&Derived>) -> &'static str {
     match derived {
+        Some(Derived::GradleDeps(_)) => "Gradle dependency data",
         Some(Derived::Hash(_)) => "a hash",
         Some(Derived::Lockfile(_)) => "a lock file",
         None => "nothing",
@@ -126,6 +154,36 @@ mod tests {
             artifacts: BTreeMap::new(),
             fingerprint: "f".into(),
         }
+    }
+
+    #[test]
+    fn gradle_data_roundtrip_compare_and_integrity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut locked = package("a", "b", "c");
+        locked.derived.insert(
+            "gradleDeps".into(),
+            Derived::GradleDeps(crate::lock::DerivedGradleDeps {
+                data: "deps.json".into(),
+                hash: hash("{}"),
+            }),
+        );
+        let json = serde_json::to_vec(&locked).unwrap();
+        let actual = serde_json::from_slice(&json).unwrap();
+        assert_eq!(locked, actual);
+        assert_eq!(compare(&locked, &actual), Vec::<String>::new());
+        assert_eq!(gradle_integrity(&locked, dir.path()).len(), 1);
+        std::fs::write(dir.path().join("deps.json"), "{}").unwrap();
+        assert_eq!(gradle_integrity(&locked, dir.path()), Vec::<String>::new());
+        std::fs::write(dir.path().join("deps.json"), "changed").unwrap();
+        assert!(gradle_integrity(&locked, dir.path())[0].contains("hash mismatch"));
+        let mut changed = actual;
+        if let Derived::GradleDeps(entry) = changed.derived.get_mut("gradleDeps").unwrap() {
+            entry.hash = hash("changed");
+        }
+        assert_eq!(
+            compare(&locked, &changed),
+            ["gradleDeps: Gradle dependency data changed"]
+        );
     }
 
     #[test]

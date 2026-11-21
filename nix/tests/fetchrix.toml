@@ -9,3 +9,15 @@ attr = ".#foo.goModules"
 [packages.baz.derive.cargoLock]
 kind = "cargo-vendor"
 strategy = "lockfile"
+
+[packages.foo.derive.gradleDeps]
+strategy = "gradle-deps"
+attr = ".#foo"
+
+[packages.baz.derive.gradleDeps]
+strategy = "gradle-deps"
+attr = ".#baz"
+
+[packages.new.derive.gradleDeps]
+strategy = "gradle-deps"
+attr = ".#new"

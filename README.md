@@ -172,6 +172,22 @@ in
 }
 ```
 
+### Gradle dependencies
+
+```toml
+[packages.foo.derive.gradleDeps]
+strategy = "gradle-deps"
+file = "default.nix"
+attr = "foo"
+# use_bwrap = false # disable Linux isolation when user namespaces are unavailable
+```
+
+Use `gradle.fetchDeps { inherit pname; data = source.gradleDeps; }` in the
+package. `attr`, `file`, and `select` work as for `fod`; tools come from
+`[nix].nixpkgs`. Pass `config` to `load` for first-update placeholders.
+Verification checks the saved file's digest without rerunning mitm-cache,
+whose metadata and ordering are nondeterministic.
+
 ## Development
 
 ```sh

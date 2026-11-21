@@ -1,5 +1,6 @@
 //! Hashes and lock files derived from a fetched source.
 
+mod gradle;
 pub mod prepare;
 
 use std::{
@@ -60,6 +61,7 @@ type Result<T, E = DeriveError> = std::result::Result<T, E>;
 
 pub enum Output {
     Hash(NixHash),
+    GradleDeps(Vec<u8>),
     Lockfile {
         /// Paths relative to the source root, lock file first, then the
         /// files its consumer reads beside it.
@@ -95,6 +97,7 @@ impl Deriver<'_> {
                     .ok_or(DeriveError::Unsupported("`fod` without `attr`"))?;
                 self.fod(attr, spec, src).await.map(Output::Hash)
             }
+            Strategy::GradleDeps => self.gradle_deps(spec, src).await.map(Output::GradleDeps),
             Strategy::Lockfile => self.lockfile(spec, src).await,
         }
     }

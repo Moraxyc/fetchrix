@@ -144,7 +144,15 @@ fn is_false(b: &bool) -> bool {
 #[serde(untagged)]
 pub enum Derived {
     Hash(DerivedHash),
+    GradleDeps(DerivedGradleDeps),
     Lockfile(DerivedLockfile),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DerivedGradleDeps {
+    pub data: String,
+    pub hash: Hash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

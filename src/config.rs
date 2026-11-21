@@ -418,6 +418,8 @@ pub struct DeriveSpec {
     /// `{ src, version, artifacts }`, returns.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub select: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_bwrap: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -434,6 +436,7 @@ pub enum DeriveKind {
 pub enum Strategy {
     Lockfile,
     Fod,
+    GradleDeps,
 }
 
 /// A GitHub repository written as `owner/name`.
@@ -593,15 +596,34 @@ impl Config {
             }
             for (derive, d) in &spec.derive {
                 let message = match (d.strategy, &d.attr, d.kind) {
+                    (Strategy::GradleDeps, ..) if !is_file_name(derive) => {
+                        Some("`gradle-deps` derive names must be file names")
+                    }
+                    (Strategy::GradleDeps, ..)
+                        if spec.prepare.as_ref().is_some_and(|p| {
+                            p.artifacts.contains_key(&format!("{derive}.json"))
+                        }) =>
+                    {
+                        Some("the generated Gradle file conflicts with a prepare artifact")
+                    }
+                    (Strategy::GradleDeps, None, _) => {
+                        Some("`strategy = \"gradle-deps\"` requires `attr`")
+                    }
                     (Strategy::Fod, None, _) => Some("`strategy = \"fod\"` requires `attr`"),
                     (Strategy::Lockfile, Some(_), _) => {
-                        Some("`attr` is only used with `strategy = \"fod\"`")
+                        Some("`attr` is only used with `fod` or `gradle-deps`")
                     }
                     (Strategy::Lockfile, ..) if d.file.is_some() => {
-                        Some("`file` is only used with `strategy = \"fod\"`")
+                        Some("`file` is only used with `fod` or `gradle-deps`")
                     }
                     (Strategy::Lockfile, ..) if d.select.is_some() => {
-                        Some("`select` is only used with `strategy = \"fod\"`")
+                        Some("`select` is only used with `fod` or `gradle-deps`")
+                    }
+                    _ if d.strategy != Strategy::GradleDeps && d.use_bwrap.is_some() => {
+                        Some("`use_bwrap` is only used with `strategy = \"gradle-deps\"`")
+                    }
+                    (Strategy::GradleDeps, ..) if d.kind.is_some() || d.sub_dir.is_some() => {
+                        Some("`gradle-deps` does not use `kind` or `sub_dir`")
                     }
                     _ if !d
                         .select
@@ -866,6 +888,33 @@ mod tests {
     }
 
     #[test]
+    fn gradle_deps_configuration() {
+        let base = r#"
+            [packages.foo]
+            version = { source = "manual", version = "1" }
+            fetch = { type = "url", url = "https://example.org" }
+            [packages.foo.derive.gradleDeps]
+            strategy = "gradle-deps"
+        "#;
+        assert!(parse(base).is_err());
+        let valid = format!(
+            "{base}\nattr = \"foo\"\nfile = \"default.nix\"\nselect = \"package\"\nuse_bwrap = false"
+        );
+        let config = parse(&valid).unwrap();
+        assert_eq!(
+            config.packages["foo"].derive["gradleDeps"].strategy,
+            Strategy::GradleDeps
+        );
+        assert!(parse(&format!("{valid}\nkind = \"go-modules\"")).is_err());
+        assert!(parse(&format!("{valid}\nsub_dir = \"app\"")).is_err());
+        let changed = parse(&valid.replace("false", "true")).unwrap();
+        assert_ne!(
+            config.packages["foo"].fingerprint(Path::new(".")).unwrap(),
+            changed.packages["foo"].fingerprint(Path::new(".")).unwrap()
+        );
+    }
+
+    #[test]
     fn fingerprint_ignores_absent_file() {
         let spec = DeriveSpec {
             kind: None,
@@ -874,6 +923,7 @@ mod tests {
             attr: Some(".#foo".into()),
             file: None,
             select: None,
+            use_bwrap: None,
         };
         assert_eq!(
             serde_json::to_string(&spec).unwrap(),
