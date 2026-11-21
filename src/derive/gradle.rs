@@ -126,7 +126,7 @@ fn gradle_apply(
     pkgs: &str,
 ) -> String {
     let src = format!(
-        "builtins.path {{ path = /. + {}; name = \"source\"; }}",
+        "rec {{ name = \"source\"; outPath = builtins.path {{ path = /. + {}; inherit name; }}; }}",
         nix_string(&src.to_string_lossy())
     );
     let drv = if let Some(select) = &spec.select {

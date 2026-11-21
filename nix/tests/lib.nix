@@ -14,7 +14,18 @@ let
       attr = "mySources";
     }
   );
-  inherit (overlaid.mySources) foo baz web;
+  inherit (overlaid.mySources)
+    foo
+    baz
+    new
+    web
+    ;
+  gradleDepsDrv =
+    data:
+    (overlaid.gradle.fetchDeps {
+      pkg.pname = "fetchrix-test";
+      inherit data;
+    }).drvPath;
   # The fixture source stands in for the unfetchable `web.src`.
   webApp = buildNpmPackage {
     inherit (web) pname version;
@@ -30,8 +41,13 @@ let
   };
 in
 assert foo.gradleDeps == ./_sources/foo/gradleDeps.json;
+assert builtins.isPath baz.gradleDeps;
+assert builtins.isPath new.gradleDeps;
 assert (lib.importJSON baz.gradleDeps)."!version" == 1;
-assert (lib.importJSON overlaid.mySources.new.gradleDeps)."!version" == 1;
+assert (lib.importJSON new.gradleDeps)."!version" == 1;
+assert gradleDepsDrv baz.gradleDeps == gradleDepsDrv new.gradleDeps;
+assert lib.isDerivation new.src;
+assert new.src.name == "source";
 assert foo.pname == "foo-bin";
 assert web.pname == "web";
 assert foo.version == "1.2.3";

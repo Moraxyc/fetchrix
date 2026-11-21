@@ -15,6 +15,9 @@ rec {
     With the fetchrix configuration file `config`, a `fod` derived hash that
     is declared there but not locked yet is `lib.fakeHash`, so the package
     still evaluates while fetchrix computes the hash for the first time.
+    An unlocked `gradle-deps` entry is a path to an empty deps JSON file.
+    If the whole Gradle package is unlocked, `src` is a named empty directory
+    derivation until fetchrix supplies the real source.
   */
   load =
     {
@@ -29,13 +32,7 @@ rec {
       unlocked =
         name:
         lib.mapAttrs
-          (
-            _: spec:
-            if spec.strategy == "gradle-deps" then
-              builtins.toFile "deps.json" (builtins.toJSON { "!version" = 1; })
-            else
-              lib.fakeHash
-          )
+          (_: spec: if spec.strategy == "gradle-deps" then ./empty-gradle-deps.json else lib.fakeHash)
           (
             lib.filterAttrs (
               _: spec:
@@ -131,7 +128,7 @@ rec {
             pname = declared.${name}.pname or name;
             version = "0";
             rawVersion = "0";
-            src = builtins.toFile "source" "";
+            src = pkgs.runCommand "source" { } ''mkdir "$out"'';
           }
           // unlocked name
         )
