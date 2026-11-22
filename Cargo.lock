@@ -1325,7 +1325,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "nix-compat"
 version = "0.1.0"
-source = "git+https://git.snix.dev/snix/snix.git?rev=e6a4f77ea12b8c46779451b7e48f0d334f7d246c#e6a4f77ea12b8c46779451b7e48f0d334f7d246c"
+source = "git+https://git.snix.dev/snix/snix.git?rev=89d4beb24d6c1cccc0c75cfbfb93750441911a1d#89d4beb24d6c1cccc0c75cfbfb93750441911a1d"
 dependencies = [
  "aho-corasick",
  "bitflags",
